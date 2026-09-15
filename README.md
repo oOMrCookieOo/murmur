@@ -19,7 +19,65 @@ make sign-cert   # once — see "Why sign-cert first" below
 make run         # build, launch, and prompt for permissions
 ```
 
-Then grant the three permissions (below), and hold **Right Option** to dictate.
+Then grant three permissions, and hold **Right Option** to dictate.
+
+> **Murmur will look broken until those permissions are granted.** It is a
+> menu-bar app with no window and no Dock icon, so a failed launch and a
+> successful one look identical. If holding the key does nothing, that is
+> almost always permissions — see [First run](#first-run) before assuming a
+> bug.
+
+### Building
+
+`make` is the tested path and needs only the Command Line Tools — no Xcode.
+
+`Murmur.xcodeproj` is provided and every source compiles, but it has **never
+been opened in Xcode** (it was written and verified on a machine without it),
+so treat it as unverified. If it needs fixing, a PR is welcome.
+
+One consequence of the `make` path: SwiftUI's macros (`@State`, `#Preview`) need
+a compiler plugin that ships only with Xcode, so the code keeps view state in
+`@Observable` models instead. `@Observable` and `@Bindable` work fine. Building
+in Xcode is not restricted.
+
+---
+
+## First run
+
+This is the part that wastes people's time, so in order:
+
+1. **`make sign-cert`** — once, before granting anything. Skip it and you will
+   be re-granting Accessibility after most rebuilds. It asks for your login
+   password twice.
+2. **`make run`.** The mic icon appears in the menu bar. Murmur asks for
+   Accessibility and Input Monitoring — an app that has never *requested* a
+   permission does not appear in the System Settings lists at all, so this
+   launch is what puts it there.
+3. **Grant them**, then either click **Settings… → Permissions → "Re-check and
+   restart the key listener"** or relaunch. macOS never tells an app its
+   permissions changed, so nothing picks it up on its own.
+4. **Microphone** is asked for separately, the first time you actually dictate.
+5. **Hold Right Option, say something, release.**
+
+### If the key does nothing
+
+Check what the app itself thinks:
+
+```sh
+/usr/bin/log show --last 2m --info --predicate 'subsystem == "com.mrcookie.Murmur"' | grep Permissions
+```
+
+That prints exactly which of the three is missing.
+
+**If a permission shows as granted but the log says otherwise**, the entry is
+stale — macOS binds grants to the code signature, and yours changed when you
+switched from ad-hoc to a certificate. Remove Murmur from the list with **−**,
+then re-add `build/Murmur.app` with **+**. Or clear the records outright:
+
+```sh
+tccutil reset Accessibility com.mrcookie.Murmur
+tccutil reset ListenEvent   com.mrcookie.Murmur
+```
 
 ### Why `sign-cert` first
 
@@ -239,16 +297,9 @@ make install   # copy to /Applications
 make clean
 ```
 
-There are two ways to build, and they produce the same app:
-
-- **Xcode** — open `Murmur.xcodeproj`. Normal workflow, full debugger.
-- **`make`** — `swiftc` directly against the macOS SDK. No Xcode needed; the
-  Command Line Tools SDK is enough.
-
-One limitation of the `make` path: SwiftUI's macros (`@State`, `#Preview`) need
-a compiler plugin that ships only with Xcode, so the code avoids `@State` and
-keeps view state in `@Observable` models instead. `@Observable` and `@Bindable`
-work fine. If you build in Xcode you are not restricted.
+`make check` is a real compile with the build's own flags, not `-typecheck` —
+that distinction matters, because `-typecheck` once reported "no errors" on code
+that failed to build.
 
 ### Logs
 
