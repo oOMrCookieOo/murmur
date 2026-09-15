@@ -27,6 +27,12 @@ final class DictationController {
     /// Microphone level, 0...1, sampled for the HUD's waveform.
     private(set) var inputLevel: Float = 0
     private(set) var lastError: String?
+
+    /// Key-up → paste, for the most recent dictation.
+    private(set) var lastLatencyMilliseconds: Int?
+    /// Median of the recent window, which is the number actually worth judging.
+    private(set) var medianLatencyMilliseconds: Int?
+    private var recentLatencies: [Int] = []
     /// Locales this Mac can transcribe. Loaded once at launch; the Settings
     /// language picker reads it.
     private(set) var supportedLocales: [Locale] = []
@@ -48,6 +54,8 @@ final class DictationController {
     private var levelTask: Task<Void, Never>?
     private var dismissTask: Task<Void, Never>?
     private var recordingStartedAt: ContinuousClock.Instant?
+    /// Set the instant the trigger is released; the origin for latency.
+    private var keyUpAt: ContinuousClock.Instant?
 
     init(settings: AppSettings, permissions: PermissionsModel) {
         self.settings = settings
@@ -269,6 +277,7 @@ final class DictationController {
             }
         }
 
+        keyUpAt = .now
         phase = .finalizing
         monitor?.setCapturing(false)
         autoStopTask?.cancel()
@@ -281,6 +290,7 @@ final class DictationController {
     private func completeDictation() async {
         let snapshot = settings.snapshot
 
+        let startedAt = keyUpAt ?? .now
         let raw: String
         do {
             raw = try await engine.endCapture()
@@ -294,6 +304,8 @@ final class DictationController {
             await rearm()
             return
         }
+
+        let transcribedAt = ContinuousClock.now
 
         // Cleanup is optional and always falls back to `raw`.
         var text = raw
@@ -312,12 +324,15 @@ final class DictationController {
             text = raw
         }
 
+        let cleanedAt = ContinuousClock.now
+
         phase = .delivering
-        let delivery = await TextInjector.deliver(text, to: target, settings: snapshot)
+        let report = await TextInjector.deliver(text, to: target, settings: snapshot)
 
         history.add(text, destination: target?.displayName, limit: snapshot.historyLimit)
+        recordLatency(from: startedAt, transcribedAt: transcribedAt, cleanedAt: cleanedAt, report: report)
 
-        switch delivery {
+        switch report.delivery {
         case .pasted:
             flash(.pasted)
         case .leftOnClipboard(let reason):
@@ -376,6 +391,46 @@ final class DictationController {
         } catch {
             Log.speech.error("Re-prewarm failed: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Latency
+
+    /// Records key-up → paste, broken down by stage.
+    ///
+    /// Measured to `report.pastedAt` rather than to the return of `deliver`:
+    /// delivery does not return until the clipboard has been restored ~250 ms
+    /// later, but the text is on screen the moment Cmd+V goes out. Timing the
+    /// return would overstate what the user actually experiences.
+    private func recordLatency(
+        from start: ContinuousClock.Instant,
+        transcribedAt: ContinuousClock.Instant,
+        cleanedAt: ContinuousClock.Instant,
+        report: TextInjector.DeliveryReport
+    ) {
+        guard let pastedAt = report.pastedAt else { return }
+
+        func milliseconds(_ duration: Duration) -> Int {
+            Int(duration.components.seconds * 1000)
+                + Int(duration.components.attoseconds / 1_000_000_000_000_000)
+        }
+
+        let transcribe = milliseconds(transcribedAt - start)
+        let cleanup = milliseconds(cleanedAt - transcribedAt)
+        let deliver = milliseconds(pastedAt - cleanedAt)
+        let total = milliseconds(pastedAt - start)
+
+        lastLatencyMilliseconds = total
+        recentLatencies.append(total)
+        if recentLatencies.count > 50 { recentLatencies.removeFirst() }
+
+        let sorted = recentLatencies.sorted()
+        medianLatencyMilliseconds = sorted[sorted.count / 2]
+
+        Log.app.info(
+            """
+            Latency \(total, privacy: .public)ms             (transcribe \(transcribe, privacy: .public)ms,             cleanup \(cleanup, privacy: .public)ms,             deliver \(deliver, privacy: .public)ms)             median \(self.medianLatencyMilliseconds ?? 0, privacy: .public)ms             over \(self.recentLatencies.count, privacy: .public)
+            """
+        )
     }
 
     // MARK: - HUD helpers

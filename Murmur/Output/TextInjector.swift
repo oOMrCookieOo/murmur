@@ -22,6 +22,22 @@ import CoreGraphics
 @MainActor
 enum TextInjector {
 
+    /// Outcome plus the instant the paste keystroke was posted.
+    ///
+    /// The instant matters for measurement: `deliver` does not return until the
+    /// clipboard has been restored ~250 ms later, but the text appears on
+    /// screen the moment Cmd+V goes out. Timing the return value would
+    /// overstate perceived latency by the whole restore delay.
+    struct DeliveryReport: Sendable {
+        let delivery: Delivery
+        let pastedAt: ContinuousClock.Instant?
+
+        init(_ delivery: Delivery, pastedAt: ContinuousClock.Instant? = nil) {
+            self.delivery = delivery
+            self.pastedAt = pastedAt
+        }
+    }
+
     enum Delivery: Sendable, Equatable {
         case pasted
         /// Text is on the clipboard. `reason` is nil when that is what the user asked for.
@@ -34,21 +50,21 @@ enum TextInjector {
         _ text: String,
         to target: FocusSnapshot?,
         settings: SettingsData
-    ) async -> Delivery {
-        guard !text.isEmpty else { return .failed(reason: "Nothing was transcribed") }
+    ) async -> DeliveryReport {
+        guard !text.isEmpty else { return DeliveryReport(.failed(reason: "Nothing was transcribed")) }
 
         if settings.deliveryMode == .clipboardOnly {
-            return writeToClipboardWithoutRestoring(text)
+            return DeliveryReport(writeToClipboardWithoutRestoring(text)
                 ? .leftOnClipboard(reason: nil)
-                : .failed(reason: "Could not write to the clipboard")
+                : .failed(reason: "Could not write to the clipboard"))
         }
 
         if let refusal = await pasteBlocker(for: target, settings: settings) {
             // Falling back to the clipboard rather than dropping the text is the
             // whole point: the user said words, the words must survive.
-            return writeToClipboardWithoutRestoring(text)
+            return DeliveryReport(writeToClipboardWithoutRestoring(text)
                 ? .leftOnClipboard(reason: refusal)
-                : .failed(reason: "Could not write to the clipboard")
+                : .failed(reason: "Could not write to the clipboard"))
         }
 
         let separator = leadingSeparator(for: target, settings: settings)
@@ -242,7 +258,7 @@ enum TextInjector {
         _ text: String,
         to target: FocusSnapshot?,
         settings: SettingsData
-    ) async -> Delivery {
+    ) async -> DeliveryReport {
         let pasteboard = NSPasteboard.general
 
         let previous = PasteboardSnapshot.capture(from: pasteboard)
@@ -263,7 +279,7 @@ enum TextInjector {
             // The clipboard has already been cleared, so the user's contents are
             // gone unless we put them back right now.
             previous.restore(to: pasteboard, onlyIfUnchangedFrom: pasteboard.changeCount)
-            return .failed(reason: "Could not write to the clipboard")
+            return DeliveryReport(.failed(reason: "Could not write to the clipboard"))
         }
         let ourChangeCount = pasteboard.changeCount
 
@@ -278,13 +294,14 @@ enum TextInjector {
         if let target, !target.isStillFrontmost {
             previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
             _ = writeToClipboardWithoutRestoring(text)
-            return .leftOnClipboard(reason: "Focus moved to another app")
+            return DeliveryReport(.leftOnClipboard(reason: "Focus moved to another app"))
         }
 
+        let pastedAt = ContinuousClock.now
         guard postCommandV() else {
             previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
             _ = writeToClipboardWithoutRestoring(text)
-            return .leftOnClipboard(reason: "Could not send the paste keystroke")
+            return DeliveryReport(.leftOnClipboard(reason: "Could not send the paste keystroke"))
         }
 
         // Give the target app time to actually read the pasteboard before we
@@ -295,7 +312,7 @@ enum TextInjector {
         previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
 
         if let target { lastPasteTarget = (target.processIdentifier, .now) }
-        return .pasted
+        return DeliveryReport(.pasted, pastedAt: pastedAt)
     }
 
     private static func postCommandV() -> Bool {

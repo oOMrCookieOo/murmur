@@ -50,6 +50,13 @@ struct MenuBarPanel: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let median = controller.medianLatencyMilliseconds,
+               let last = controller.lastLatencyMilliseconds {
+                Text("Key-up to paste: \(last) ms, median \(median) ms")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 
