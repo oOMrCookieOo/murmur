@@ -55,8 +55,12 @@ final class TranscriptHistory {
 
     @ObservationIgnored private let fileURL: URL?
 
-    init(limit: Int) {
-        fileURL = Self.makeFileURL()
+    /// - Parameter directory: overrides where the file lives. Only tests pass
+    ///   this: `FileManager`'s Application Support lookup does not honour a
+    ///   reassigned `$HOME` on macOS, so a test that tried to redirect it that
+    ///   way silently wrote to — and corrupted — the real history file.
+    init(limit: Int, directory: URL? = nil) {
+        fileURL = Self.makeFileURL(in: directory)
         records = Self.load(from: fileURL)
         // Honour a lowered limit at launch rather than waiting for the next
         // dictation to truncate.
@@ -141,12 +145,16 @@ final class TranscriptHistory {
 
     // MARK: - Storage
 
-    private static func makeFileURL() -> URL? {
-        guard let support = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first else { return nil }
-
-        let directory = support.appendingPathComponent("Murmur", isDirectory: true)
+    private static func makeFileURL(in override: URL?) -> URL? {
+        let directory: URL
+        if let override {
+            directory = override
+        } else {
+            guard let support = FileManager.default.urls(
+                for: .applicationSupportDirectory, in: .userDomainMask
+            ).first else { return nil }
+            directory = support.appendingPathComponent("Murmur", isDirectory: true)
+        }
         do {
             try FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true

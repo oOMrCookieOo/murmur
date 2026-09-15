@@ -18,14 +18,14 @@ struct HistoryTests {
             print("\(condition ? "PASS" : "FAIL")  \(label)")
         }
 
-        // Redirect Application Support at a scratch directory.
+        // The directory is injected, not redirected via $HOME: FileManager's
+        // Application Support lookup ignores $HOME on macOS, so an earlier
+        // version of this test wrote to the real history file and corrupted it.
         let sandbox = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("murmur-history-tests-\(UUID().uuidString)")
-        setenv("HOME", sandbox.path, 1)
-        try? FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: sandbox) }
 
-        let history = await TranscriptHistory(limit: 20)
+        let history = await TranscriptHistory(limit: 20, directory: sandbox)
         guard let url = await history.storageURL else {
             print("FAIL  no storage URL")
             exit(1)
@@ -41,22 +41,22 @@ struct HistoryTests {
         check("oldest were dropped", await history.records.last?.text == "entry 6")
 
         print("\n=== it survives a relaunch ===")
-        let reloaded = await TranscriptHistory(limit: 20)
+        let reloaded = await TranscriptHistory(limit: 20, directory: sandbox)
         check("reloaded from disk", await reloaded.records.count == 20)
         check("order preserved", await reloaded.records.first?.text == "entry 25")
 
         print("\n=== lowering the limit trims immediately, at launch ===")
-        let trimmed = await TranscriptHistory(limit: 5)
+        let trimmed = await TranscriptHistory(limit: 5, directory: sandbox)
         check("trimmed on load", await trimmed.records.count == 5)
         check("kept the newest", await trimmed.records.first?.text == "entry 25")
 
         print("\n=== a limit of 0 deletes the file ===")
-        let disabled = await TranscriptHistory(limit: 0)
+        let disabled = await TranscriptHistory(limit: 0, directory: sandbox)
         check("nothing kept", await disabled.records.isEmpty)
         check("file removed", !FileManager.default.fileExists(atPath: url.path))
 
         print("\n=== clear() removes memory and disk ===")
-        let fresh = await TranscriptHistory(limit: 20)
+        let fresh = await TranscriptHistory(limit: 20, directory: sandbox)
         await fresh.add("something", destination: nil, limit: 20)
         check("wrote a record", await fresh.records.count == 1)
         check("file created", FileManager.default.fileExists(atPath: url.path))
@@ -81,13 +81,20 @@ struct HistoryTests {
 
         print("\n=== a corrupt file must not stop launch ===")
         try? "this is not json".write(to: url, atomically: true, encoding: .utf8)
-        let recovered = await TranscriptHistory(limit: 20)
+        let recovered = await TranscriptHistory(limit: 20, directory: sandbox)
         check("recovered as empty", await recovered.records.isEmpty)
 
         print("\n=== empty text is ignored ===")
         let counted = await recovered.records.count
         await recovered.add("   \n  ", destination: nil, limit: 20)
         check("whitespace not recorded", await recovered.records.count == counted)
+
+        print("\n=== the real history file must be untouched ===")
+        let realPath = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Murmur/history.json").path
+        check("tests wrote inside the sandbox", url.path.hasPrefix(sandbox.path))
+        check("sandbox is not the real location", url.path != realPath)
 
         print("")
         if failures == 0 {
