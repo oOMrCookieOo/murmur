@@ -68,15 +68,14 @@ enum TextInjector {
                 : .failed(reason: "Could not write to the clipboard"))
         }
 
-        let separator = leadingSeparator(for: target, settings: settings)
-        return await paste(separator + text, to: target, settings: settings)
+        return await paste(text, to: target, settings: settings)
     }
 
     // MARK: - Spacing
 
     /// When the last paste happened, and where, so consecutive dictations can be
     /// separated even in apps whose text position we cannot read.
-    private static var lastPasteTarget: (pid: pid_t, at: ContinuousClock.Instant)?
+    private static var lastPasteTarget: (pid: pid_t, bundleID: String?, at: ContinuousClock.Instant)?
 
     private static func leadingSeparator(for target: FocusSnapshot?, settings: SettingsData) -> String {
         switch settings.spacingMode {
@@ -97,6 +96,7 @@ enum TextInjector {
             // repeatedly into the same app without pausing.
             if let last = lastPasteTarget,
                last.pid == target.processIdentifier,
+               last.bundleID == target.bundleIdentifier,
                ContinuousClock.now - last.at < .seconds(30) {
                 return " "
             }
@@ -131,6 +131,9 @@ enum TextInjector {
         }
         // Start of the field: nothing to separate from.
         guard caret.location > 0 else { return false }
+        // A selection is about to be *replaced*, so what precedes the selection
+        // is irrelevant — "hello[world]" + "there" should give "hellothere".
+        guard caret.length == 0 else { return false }
 
         var previousCharacter = CFRange(location: caret.location - 1, length: 1)
         guard let parameter = AXValueCreate(.cfRange, &previousCharacter) else { return nil }
@@ -247,7 +250,11 @@ enum TextInjector {
     /// the callback, so any clipboard manager that reads on change consumes the
     /// signal before the target app does. When that happens we simply fall back
     /// to the timed restore, which is what the app did before.
-    private final class TranscriptDataProvider: NSObject, NSPasteboardItemDataProvider, @unchecked Sendable {
+    /// Measured: the delegate callbacks arrive on the **main thread**, including
+    /// for cross-process reads. That is load-bearing — `waitForRead` must
+    /// `await` rather than spin, or it would starve the very callback it is
+    /// waiting for and deadlock the target app's paste.
+    private final class TranscriptDataProvider: NSObject, NSPasteboardItemDataProvider, Sendable {
         private let text: String
         private let lastRead = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
 
@@ -283,18 +290,39 @@ enum TextInjector {
         return item
     }
 
-    /// Waits for the transcript to actually be read, up to `timeoutMilliseconds`.
+    /// Never restore sooner than this after the keystroke, however quickly a
+    /// read is observed.
+    ///
+    /// An observed read is not proof the *target* read it. A clipboard manager
+    /// polling a few milliseconds after Cmd+V satisfies `read > postedAt` just
+    /// as well, and restoring on that signal puts the user's old clipboard back
+    /// before the target's paste handler runs — so the old content lands in
+    /// their document and the transcript is lost. The floor makes that race
+    /// require the target to be more than 50 ms slower than the manager, while
+    /// still keeping most of the saving over a flat 250 ms wait.
+    private static let minimumRestoreDelay: Duration = .milliseconds(50)
+
+    /// Waits for the transcript to actually be read.
     /// - Returns: whether a read was observed after `postedAt`.
     private static func waitForRead(
         from provider: TranscriptDataProvider,
         after postedAt: ContinuousClock.Instant,
         timeoutMilliseconds: Int
     ) async -> Bool {
-        let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
+        let floor = postedAt + minimumRestoreDelay
+        // An unobserved read is evidence the target has *not* taken the text
+        // yet, so waiting longer is strictly safer than restoring on schedule.
+        // Capped so a target that never reads cannot hold the clipboard.
+        let deadline = postedAt + .milliseconds(max(timeoutMilliseconds, 250)) + .milliseconds(400)
+
         while ContinuousClock.now < deadline {
-            // Only reads that happen after the keystroke count. An earlier one
-            // is a clipboard manager, not the target app.
-            if let read = provider.lastReadAt, read > postedAt { return true }
+            if Task.isCancelled { return false }
+
+            if let read = provider.lastReadAt,
+               read > postedAt,
+               ContinuousClock.now >= floor {
+                return true
+            }
             try? await Task.sleep(for: .milliseconds(3))
         }
         return false
@@ -320,6 +348,15 @@ enum TextInjector {
     ) async -> DeliveryReport {
         let pasteboard = NSPasteboard.general
 
+        // The separator is only ever pasted, never left on the clipboard: a
+        // fallback that hands back " transcript" with a stray leading space is
+        // not what the user asked to copy.
+        let separated = leadingSeparator(for: target, settings: settings) + text
+
+        // Note: capturing a clipboard that holds promised items (Mail, Photos,
+        // Figma file promises) does a synchronous cross-process round trip per
+        // type. A live-but-wedged owner can therefore block here. Bounded only
+        // by the other process.
         let previous = PasteboardSnapshot.capture(from: pasteboard)
 
         pasteboard.clearContents()
@@ -334,7 +371,7 @@ enum TextInjector {
         //
         // Only on this path: in clipboard-only mode the clipboard IS the
         // deliverable, and suppressing history there would be wrong.
-        let provider = TranscriptDataProvider(text: text)
+        let provider = TranscriptDataProvider(text: separated)
         guard pasteboard.writeObjects([transcriptItem(provider: provider)]) else {
             // The clipboard has already been cleared, so the user's contents are
             // gone unless we put them back right now.
@@ -353,8 +390,18 @@ enum TextInjector {
         // user's text — into the wrong app.
         if let target, !target.isStillFrontmost {
             previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
-            _ = writeToClipboardWithoutRestoring(text)
+            _ = writeToClipboardWithoutRestoring(separated)
             return DeliveryReport(.leftOnClipboard(reason: "Focus moved to another app"))
+        }
+
+        // Re-checked here, not only in pasteBlocker: the AX work, the modifier
+        // wait and a reactivation can add hundreds of milliseconds, and a
+        // password field or sudo prompt can appear inside that window. Posting
+        // into secure input silently swallows the keystroke.
+        if IsSecureEventInputEnabled() {
+            previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
+            _ = writeToClipboardWithoutRestoring(text)
+            return DeliveryReport(.leftOnClipboard(reason: "A password field is active"))
         }
 
         let pastedAt = ContinuousClock.now
@@ -377,7 +424,9 @@ enum TextInjector {
         }
         previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
 
-        if let target { lastPasteTarget = (target.processIdentifier, .now) }
+        if let target {
+            lastPasteTarget = (target.processIdentifier, target.bundleIdentifier, .now)
+        }
         return DeliveryReport(.pasted, pastedAt: pastedAt)
     }
 

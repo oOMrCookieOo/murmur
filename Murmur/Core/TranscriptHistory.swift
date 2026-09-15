@@ -20,8 +20,7 @@ struct TranscriptRecord: Identifiable, Sendable, Equatable, Codable {
     /// Single-line preview for the menu.
     var preview: String {
         let collapsed = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "  ", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
         return collapsed.count <= 60 ? collapsed : String(collapsed.prefix(59)) + "…"
     }
@@ -46,11 +45,42 @@ final class TranscriptHistory {
 
     private(set) var records: [TranscriptRecord] = []
 
+    /// The row that was just copied, so the UI can confirm the click landed.
+    /// A button that does something invisible reads as a broken button.
+    private(set) var lastCopiedID: UUID?
+    /// Set briefly after a deletion, for the same reason.
+    private(set) var didJustClear = false
+
+    @ObservationIgnored private var feedbackTask: Task<Void, Never>?
+
     @ObservationIgnored private let fileURL: URL?
 
-    init() {
+    init(limit: Int) {
         fileURL = Self.makeFileURL()
         records = Self.load(from: fileURL)
+        // Honour a lowered limit at launch rather than waiting for the next
+        // dictation to truncate.
+        applyLimit(limit)
+    }
+
+    /// Trims to `limit`, deleting everything if it is 0.
+    ///
+    /// Called when the setting changes, not just on the next `add`: "set 0 to
+    /// keep nothing" has to mean the file is gone now, especially since a limit
+    /// of 0 also hides the Clear button from the menu.
+    func applyLimit(_ limit: Int) {
+        guard limit > 0 else {
+            if !records.isEmpty || fileExists { clear() }
+            return
+        }
+        guard records.count > limit else { return }
+        records.removeLast(records.count - limit)
+        persist()
+    }
+
+    private var fileExists: Bool {
+        guard let fileURL else { return false }
+        return FileManager.default.fileExists(atPath: fileURL.path)
     }
 
     func add(_ text: String, destination: String?, limit: Int) {
@@ -74,13 +104,36 @@ final class TranscriptHistory {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(record.text, forType: .string)
+
+        lastCopiedID = record.id
+        didJustClear = false
+        scheduleFeedbackReset()
     }
 
     /// Forgets everything, on disk as well as in memory.
     func clear() {
+        let hadAnything = !records.isEmpty || fileExists
         records.removeAll()
-        guard let fileURL else { return }
-        try? FileManager.default.removeItem(at: fileURL)
+        if let fileURL {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        lastCopiedID = nil
+        if hadAnything {
+            didJustClear = true
+            scheduleFeedbackReset()
+        }
+    }
+
+    /// Clears the transient confirmation after a moment.
+    private func scheduleFeedbackReset() {
+        feedbackTask?.cancel()
+        feedbackTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1600))
+            guard !Task.isCancelled, let self else { return }
+            self.lastCopiedID = nil
+            self.didJustClear = false
+        }
     }
 
     /// Where the file lives, for the "Reveal in Finder" button.
@@ -96,14 +149,17 @@ final class TranscriptHistory {
         let directory = support.appendingPathComponent("Murmur", isDirectory: true)
         do {
             try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true,
-                // Owner-only on the directory too, so the filename alone is not
-                // readable by other users on the machine.
-                attributes: [.posixPermissions: 0o700]
+                at: directory, withIntermediateDirectories: true
+            )
+            // Applied unconditionally, not as a create attribute: an already
+            // existing directory keeps whatever mode it had (typically 0755),
+            // so the "readable only by your account" promise would be false
+            // for anyone whose folder predates this code.
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: directory.path
             )
         } catch {
-            Log.app.error("Could not create history directory: \(error.localizedDescription)")
+            Log.app.error("Could not prepare history directory: \(error.localizedDescription)")
             return nil
         }
         return directory.appendingPathComponent("history.json")
@@ -133,9 +189,12 @@ final class TranscriptHistory {
         do {
             let data = try encoder.encode(records)
             // Atomic so a crash mid-write cannot leave a truncated file.
-            try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
-            // Re-applied every write: an atomic write replaces the file, and
-            // the replacement gets default permissions rather than inheriting.
+            // (`.completeFileProtection` is an iOS Data Protection class and
+            // does nothing here, so it is not requested.)
+            try data.write(to: fileURL, options: [.atomic])
+            // Re-applied every write: an atomic write replaces the file and the
+            // replacement gets default permissions rather than inheriting 0600.
+            // There is a brief window at 0644, contained by the 0700 directory.
             try? FileManager.default.setAttributes(
                 [.posixPermissions: 0o600], ofItemAtPath: fileURL.path
             )

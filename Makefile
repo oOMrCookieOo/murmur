@@ -33,15 +33,22 @@ clean:
 	@rm -rf build
 	@echo "==> Cleaned"
 
-# Run the cleanup safety tests (pure functions, no app launch)
+# Run the safety tests (pure functions, no app launch)
+SHARED_TEST_SOURCES = \
+	Murmur/Cleanup/TranscriptCleaner.swift \
+	Murmur/Core/Timeout.swift \
+	Murmur/Core/Log.swift \
+	Murmur/Core/AppSettings.swift \
+	Murmur/Input/TriggerKey.swift
+
 test:
 	@mkdir -p build/tests
 	@swiftc -swift-version 6 -target $$(uname -m)-apple-macos27.0 \
 		-o build/tests/cleanup-tests \
-		Tests/CleanupTests.swift \
-		Murmur/Cleanup/TranscriptCleaner.swift \
-		Murmur/Core/Timeout.swift \
-		Murmur/Core/Log.swift \
-		Murmur/Core/AppSettings.swift \
-		Murmur/Input/TriggerKey.swift
+		Tests/CleanupTests.swift $(SHARED_TEST_SOURCES)
 	@./build/tests/cleanup-tests
+	@echo ""
+	@swiftc -swift-version 6 -target $$(uname -m)-apple-macos27.0 \
+		-o build/tests/settings-tests \
+		Tests/SettingsTests.swift $(SHARED_TEST_SOURCES)
+	@./build/tests/settings-tests

@@ -165,8 +165,13 @@ actor TranscriptCleaner {
         guard ratio > 0.5, ratio < 2.0 else { return false }
 
         let originalWords = contentWords(original)
-        guard !originalWords.isEmpty else { return true }
         let candidateWords = contentWords(candidate)
+
+        // Fail closed. An original with no content words ("so is it on") gives
+        // the comparison nothing to work with, and accepting anything on no
+        // evidence is the wrong default for a guard — that path accepted
+        // "It is on fire." as a faithful rendering.
+        guard !originalWords.isEmpty else { return false }
 
         // Gate 2: the original's content words must survive nearly intact AND
         // in their original order. Order matters — it is what catches a
@@ -175,7 +180,25 @@ actor TranscriptCleaner {
         let originalCore = collapsingStutters(originalWords)
         let candidateCore = collapsingStutters(candidateWords)
         let retained = longestCommonSubsequenceLength(originalCore, candidateCore)
-        guard Double(retained) / Double(originalCore.count) >= 0.95 else { return false }
+
+        // Proportional AND absolute. A ratio alone gets looser the longer you
+        // speak: at 0.95 a 100-word dictation may silently shed its last five
+        // words, which is exactly the kind of loss nobody notices until later.
+        guard Double(retained) / Double(originalCore.count) >= 0.95,
+              retained >= originalCore.count - 1
+        else { return false }
+
+        // Nothing may be appended after the user's last word.
+        //
+        // This is the gate that stops the model answering instead of editing.
+        // An answer, a summary, and a "Sure, here you go" all attach at the
+        // end, and every one of them survives the budget below: "what is the
+        // capital of france" → "What is the capital of France? Paris." keeps
+        // every original word in order and inserts just one.
+        guard let finalWord = originalCore.last,
+              let tail = candidateCore.lastIndex(of: finalWord),
+              tail == candidateCore.count - 1
+        else { return false }
 
         // Gate 3: cap what the model may ADD. Without this a candidate can keep
         // every original word and still append an answer, a summary, or
@@ -277,10 +300,15 @@ actor TranscriptCleaner {
     static func stripFillers(from text: String, locale: Locale) -> String {
         guard locale.language.languageCode?.identifier == "en" else { return text }
 
-        // A trailing comma is only swallowed when a space follows it, so
-        // "um, hello" loses the comma but "value: er," keeps its structure and
-        // a clause-separating comma is never eaten.
-        let pattern = "\\b(?:" + fillerWords.sorted().joined(separator: "|") + ")\\b(?:,(?= ))?"
+        // Three guards around the alternation:
+        //   (?<!\\d\\s) — "um" is the ASCII spelling of micrometres, so "5 um wide"
+        //                must survive. Same class of bug as "mm".
+        //   (?![-'’])   — "um-hum" must not lose its first half and keep the hyphen.
+        //   (?:,(?= ))? — a trailing comma goes only when a space follows, so
+        //                "um, hello" loses it but a clause separator never does.
+        let pattern = "(?<!\\d\\s)\\b(?:"
+            + fillerWords.sorted().joined(separator: "|")
+            + ")\\b(?![-'\u{2019}])(?:,(?= ))?"
 
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return text

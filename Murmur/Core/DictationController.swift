@@ -41,7 +41,7 @@ final class DictationController {
 
     let settings: AppSettings
     let permissions: PermissionsModel
-    let history = TranscriptHistory()
+    let history: TranscriptHistory
 
     // MARK: - Collaborators
 
@@ -62,6 +62,7 @@ final class DictationController {
     init(settings: AppSettings, permissions: PermissionsModel) {
         self.settings = settings
         self.permissions = permissions
+        self.history = TranscriptHistory(limit: settings.historyLimit)
     }
 
     // MARK: - Lifecycle
@@ -152,10 +153,13 @@ final class DictationController {
             _ = settings.inputDeviceUID
             _ = settings.autoStopOnSilence
             _ = settings.activationMode
+            _ = settings.historyLimit
+            _ = settings.polishWithAppleIntelligence
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
                 self.monitor?.setTrigger(self.settings.triggerKey)
+                self.history.applyLimit(self.settings.historyLimit)
 
                 // Re-arm first, synchronously. `refreshModelAndPrewarm` can
                 // spend minutes downloading a model, and with no observation
@@ -196,6 +200,13 @@ final class DictationController {
         } catch {
             Log.speech.error("Prewarm failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
+        }
+
+        // Only when the user has opted in. Warming the foundation model costs
+        // real memory, and loading it for a feature that is switched off would
+        // be exactly the bloat this app is trying to avoid.
+        if settings.polishWithAppleIntelligence {
+            await cleaner.prewarm()
         }
     }
 
@@ -249,13 +260,26 @@ final class DictationController {
             hud.dismiss()
         }
 
-        guard phase == .idle else { return }
+        guard phase == .idle else {
+            // Not silent: the processing tail can be seconds long with cleanup
+            // enabled, and a dropped press with no feedback feels identical to
+            // a broken app.
+            Log.app.info("Press ignored while \(String(describing: self.phase), privacy: .public)")
+            return
+        }
+
+        // Shown before the guards below, not after: `flash` only sets state,
+        // and with no panel on screen a refused press produced no HUD, no
+        // sound and no log — indistinguishable from the app being dead.
+        if settings.showHUD { hud.show(position: settings.hudPosition) }
 
         guard modelState.isReady else {
+            Log.app.info("Press refused: speech model not ready")
             flash(.discarded(reason: "Speech model not ready"))
             return
         }
         guard permissions.microphone != .denied else {
+            Log.app.info("Press refused: microphone denied")
             flash(.discarded(reason: "Microphone access denied"))
             return
         }
@@ -270,7 +294,6 @@ final class DictationController {
         monitor?.setCapturing(true)
 
         dismissTask?.cancel()
-        if settings.showHUD { hud.show(position: settings.hudPosition) }
         playSound(named: "Tink")
 
         startLevelPolling()
@@ -435,7 +458,13 @@ final class DictationController {
         cleanedAt: ContinuousClock.Instant,
         report: TextInjector.DeliveryReport
     ) {
-        guard let pastedAt = report.pastedAt else { return }
+        guard let pastedAt = report.pastedAt else {
+            // Clipboard-only and failed deliveries have no paste to measure.
+            // Clearing avoids the menu showing a stale figure from an earlier
+            // dictation as though it described this one.
+            lastLatencyMilliseconds = nil
+            return
+        }
 
         func milliseconds(_ duration: Duration) -> Int {
             Int(duration.components.seconds * 1000)
@@ -452,7 +481,11 @@ final class DictationController {
         if recentLatencies.count > 50 { recentLatencies.removeFirst() }
 
         let sorted = recentLatencies.sorted()
-        medianLatencyMilliseconds = sorted[sorted.count / 2]
+        // True median: the midpoint of the two central samples on an even
+        // window, rather than the upper one.
+        medianLatencyMilliseconds = sorted.count.isMultiple(of: 2)
+            ? (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
+            : sorted[sorted.count / 2]
 
         Log.app.info(
             """

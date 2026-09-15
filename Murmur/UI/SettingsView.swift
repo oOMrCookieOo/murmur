@@ -355,127 +355,139 @@ private struct PermissionsSettings: View {
 private struct AdvancedSettings: View {
     @Bindable var controller: DictationController
 
+    // Split into sub-views: as one expression this Form grew past what the
+    // type-checker will solve in reasonable time.
     var body: some View {
-        @Bindable var settings = controller.settings
-
         Form {
-            Toggle("Stop automatically when I stop speaking",
-                   isOn: $settings.autoStopOnSilence)
-            LabeledContent("Silence before stopping") {
-                Stepper(
-                    "\(settings.silenceTimeoutMilliseconds) ms",
-                    value: $settings.silenceTimeoutMilliseconds,
-                    in: 500...5000,
-                    step: 250
-                )
-            }
-            .disabled(!settings.autoStopOnSilence)
-            Text("Uses Apple's on-device voice activity detection. Applies to "
-               + "tap-to-start mode only — when you are holding the key, the "
-               + "key decides when to stop.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
+            SilenceSection(settings: controller.settings)
             Divider()
-
-            LabeledContent("Maximum dictation length") {
-                Stepper(
-                    "\(settings.maxDictationSeconds) s",
-                    value: $settings.maxDictationSeconds,
-                    in: 10...600,
-                    step: 10
-                )
-            }
-            Text("Recording stops automatically at this point and the audio "
-               + "captured so far is transcribed, so a stuck key cannot record forever.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            LabeledContent("Ignore presses shorter than") {
-                Stepper(
-                    "\(settings.minimumDictationMilliseconds) ms",
-                    value: $settings.minimumDictationMilliseconds,
-                    in: 0...1000,
-                    step: 50
-                )
-            }
-
-            LabeledContent("Keep listening after release") {
-                Stepper(
-                    "\(settings.tailGraceMilliseconds) ms",
-                    value: $settings.tailGraceMilliseconds,
-                    in: 0...500,
-                    step: 25
-                )
-            }
-            Text("The microphone delivers audio in ~100 ms blocks and discards "
-               + "whatever is mid-block when it stops, so releasing the key on "
-               + "the last syllable can clip a word. Murmur waits for that final "
-               + "block to arrive — usually far less than the limit. Set 0 for "
-               + "the lowest possible latency.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            LabeledContent("Keep recent transcripts") {
-                Stepper(
-                    "\(settings.historyLimit)",
-                    value: $settings.historyLimit,
-                    in: 0...100,
-                    step: 5
-                )
-            }
-            Text("Shown in the menu so a dictation that went somewhere "
-               + "unexpected can be copied back. Saved to disk so it survives "
-               + "restarts. Set 0 to keep nothing.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text("The file is plain JSON in your Application Support folder, "
-               + "readable only by your account and never sent anywhere — but "
-               + "it is not encrypted, so it is a running record of what you "
-               + "have dictated. \"Clear\" in the menu deletes it.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack {
-                Button("Reveal history file") {
-                    guard let url = controller.history.storageURL else { return }
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                }
-                .disabled(controller.history.storageURL == nil)
-
-                Button("Delete history now") {
-                    controller.history.clear()
-                }
-                .disabled(controller.history.records.isEmpty)
-            }
-
-            LabeledContent("Restore clipboard after") {
-                Stepper(
-                    "\(settings.pasteRestoreDelayMilliseconds) ms",
-                    value: $settings.pasteRestoreDelayMilliseconds,
-                    in: 50...2000,
-                    step: 50
-                )
-            }
-            Text("How long the target app gets to read the clipboard before "
-               + "Murmur puts your previous contents back. Raise it if pastes "
-               + "occasionally come out empty.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
+            TimingSection(settings: controller.settings)
             Divider()
-
-            Toggle("Only paste into a confirmed text field",
-                   isOn: $settings.requireEditableField)
-            Text("Uses the Accessibility API to check the focused element first. "
-               + "Safer, but some Electron and terminal apps report their text "
-               + "areas in ways this cannot recognise, so the transcript would "
-               + "go to the clipboard instead.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HistorySection(controller: controller)
+            Divider()
+            PasteSafetySection(settings: controller.settings)
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+    }
+}
+
+private struct SilenceSection: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Toggle("Stop automatically when I stop speaking", isOn: $settings.autoStopOnSilence)
+
+        LabeledContent("Silence before stopping") {
+            Stepper("\(settings.silenceTimeoutMilliseconds) ms",
+                    value: $settings.silenceTimeoutMilliseconds,
+                    in: 500...5000, step: 250)
+        }
+        .disabled(!settings.autoStopOnSilence)
+
+        Text("Uses Apple's on-device voice activity detection. Applies to "
+           + "tap-to-start mode only — when you are holding the key, the key "
+           + "decides when to stop.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+}
+
+private struct TimingSection: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        LabeledContent("Maximum dictation length") {
+            Stepper("\(settings.maxDictationSeconds) s",
+                    value: $settings.maxDictationSeconds,
+                    in: 10...600, step: 10)
+        }
+
+        LabeledContent("Ignore presses shorter than") {
+            Stepper("\(settings.minimumDictationMilliseconds) ms",
+                    value: $settings.minimumDictationMilliseconds,
+                    in: 0...1000, step: 50)
+        }
+
+        LabeledContent("Keep listening after release") {
+            Stepper("\(settings.tailGraceMilliseconds) ms",
+                    value: $settings.tailGraceMilliseconds,
+                    in: 0...500, step: 25)
+        }
+        Text("The microphone delivers audio in ~100 ms blocks and discards "
+           + "whatever is mid-block when it stops, so releasing the key on the "
+           + "last syllable can clip a word. Murmur waits for that final block "
+           + "— usually far less than the limit. Set 0 for lowest latency.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        LabeledContent("Restore clipboard after") {
+            Stepper("\(settings.pasteRestoreDelayMilliseconds) ms",
+                    value: $settings.pasteRestoreDelayMilliseconds,
+                    in: 50...2000, step: 50)
+        }
+        Text("A ceiling, not a fixed wait: Murmur normally restores the moment "
+           + "the target app reads the text. Raise it if pastes occasionally "
+           + "come out empty.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+}
+
+private struct HistorySection: View {
+    @Bindable var controller: DictationController
+
+    var body: some View {
+        @Bindable var settings = controller.settings
+
+        LabeledContent("Keep recent transcripts") {
+            Stepper("\(settings.historyLimit)",
+                    value: $settings.historyLimit,
+                    in: 0...100, step: 5)
+        }
+        Text("Shown in the menu so a dictation that went somewhere unexpected "
+           + "can be copied back. Saved to disk so it survives restarts. "
+           + "Set 0 to delete it and keep nothing.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        Text("The file is plain JSON in your Application Support folder, "
+           + "readable only by your account and never sent anywhere — but it "
+           + "is not encrypted, so it is a running record of what you have "
+           + "dictated.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        HStack {
+            Button("Reveal history file") {
+                guard let url = controller.history.storageURL else { return }
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+            .disabled(controller.history.storageURL == nil)
+
+            Button("Delete history now") { controller.history.clear() }
+                .disabled(controller.history.records.isEmpty)
+
+            if controller.history.didJustClear {
+                Label("Deleted", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.caption)
+                    .transition(.opacity)
+            }
+        }
+    }
+}
+
+private struct PasteSafetySection: View {
+    @Bindable var settings: AppSettings
+
+    var body: some View {
+        Toggle("Only paste into a confirmed text field", isOn: $settings.requireEditableField)
+        Text("Uses the Accessibility API to check the focused element first. "
+           + "Safer — a stray paste in the Finder duplicates a file — but some "
+           + "Electron and terminal apps report their text areas in ways this "
+           + "cannot recognise, so the transcript goes to the clipboard instead.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 }

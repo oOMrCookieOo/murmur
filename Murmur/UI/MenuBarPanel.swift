@@ -158,22 +158,26 @@ struct MenuBarPanel: View {
             }
 
             if controller.history.records.isEmpty {
-                Text("Nothing yet — your dictations will appear here.")
+                Text(controller.history.didJustClear
+                     ? "Deleted."
+                     : "Nothing yet — your dictations will appear here.")
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(controller.history.didJustClear ? .secondary : .tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             ForEach(controller.history.records.prefix(5)) { record in
+                let copied = controller.history.lastCopiedID == record.id
                 Button {
                     controller.history.copyToClipboard(record)
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                        Text(record.preview)
+                        Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
+                            .font(.system(size: copied ? 10 : 9))
+                            .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                        Text(copied ? "Copied" : record.preview)
                             .font(.caption)
+                            .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.primary))
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Spacer(minLength: 0)
@@ -183,6 +187,7 @@ struct MenuBarPanel: View {
                 .buttonStyle(.plain)
                 .help("Click to copy — \(record.destination ?? "unknown app")")
             }
+            .animation(.easeOut(duration: 0.15), value: controller.history.lastCopiedID)
         }
     }
 

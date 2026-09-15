@@ -115,10 +115,22 @@ The menu lists your recent dictations; click one to copy it back. Every other
 safeguard stops your words being *destroyed* — this is the one that lets you
 *recover* a dictation that landed somewhere unexpected.
 
-**In memory only, cleared when Murmur quits.** Everything you dictate passes
-through here: spoken passwords, messages, private notes. A plaintext log on disk
-of everything ever said to the app would be a far worse default than losing
-history at quit. Settings → Advanced sets the count; 0 disables it.
+**Saved to disk, so it survives restarts.** Everything you dictate passes
+through here: spoken passwords, messages, private notes.
+
+```
+~/Library/Application Support/Murmur/history.json
+```
+
+Plain JSON, `0600` in a `0700` directory — readable only by your account, never
+sent anywhere, **not encrypted**. It is a running record of what you have
+dictated, and anything running as you can read it. That is the trade for a
+recovery net that survives a restart; an in-memory one empties itself exactly
+when you need it.
+
+**Settings → Advanced → Keep recent transcripts** sets how many are kept.
+**Set it to 0 to delete the file and stop storing anything.** There is also a
+Reveal and a Delete button there, and Clear in the menu.
 
 ### Microphone
 
@@ -259,7 +271,7 @@ Murmur/
                 PasteboardSnapshot     capture / restore the clipboard
                 FocusSnapshot          which app to paste into
   Cleanup/      TranscriptCleaner      optional, guarded, falls back to raw
-  Core/         TranscriptHistory      recent dictations, in memory only
+  Core/         TranscriptHistory      recent dictations, saved to disk
                 Timeout                wall-clock-bounded race helper
   Permissions/  PermissionsModel       status, prompts, Settings deep links
   UI/           MenuBarPanel, SettingsView, HUDController, HUDView

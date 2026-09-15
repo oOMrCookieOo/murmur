@@ -139,6 +139,48 @@ struct SettingsData: Codable, Equatable, Sendable {
     var playSounds: Bool = false
     var launchAtLogin: Bool = false
 
+
+    /// Decodes leniently, falling back to the default for any key that is absent.
+    ///
+    /// Swift's synthesised `Decodable` ignores property default values and
+    /// throws `keyNotFound` for a missing key. Combined with the `try?` at the
+    /// call site, that meant **adding a single new setting silently reset every
+    /// preference the user had** — trigger key, language, microphone,
+    /// vocabulary, the lot. It happened six times during development before
+    /// anyone noticed, because it produces no error and no log line.
+    ///
+    /// Written out longhand so a newly added field that is forgotten here just
+    /// keeps its default, instead of destroying everything else.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = SettingsData()
+
+        triggerKey = try container.decodeIfPresent(TriggerKey.self, forKey: .triggerKey) ?? defaults.triggerKey
+        activationMode = try container.decodeIfPresent(ActivationMode.self, forKey: .activationMode) ?? defaults.activationMode
+        deliveryMode = try container.decodeIfPresent(DeliveryMode.self, forKey: .deliveryMode) ?? defaults.deliveryMode
+        spacingMode = try container.decodeIfPresent(SpacingMode.self, forKey: .spacingMode) ?? defaults.spacingMode
+        customVocabulary = try container.decodeIfPresent(String.self, forKey: .customVocabulary) ?? defaults.customVocabulary
+        historyLimit = try container.decodeIfPresent(Int.self, forKey: .historyLimit) ?? defaults.historyLimit
+        inputDeviceUID = try container.decodeIfPresent(String.self, forKey: .inputDeviceUID) ?? defaults.inputDeviceUID
+        localeIdentifier = try container.decodeIfPresent(String.self, forKey: .localeIdentifier) ?? defaults.localeIdentifier
+        stripFillers = try container.decodeIfPresent(Bool.self, forKey: .stripFillers) ?? defaults.stripFillers
+        polishWithAppleIntelligence = try container.decodeIfPresent(Bool.self, forKey: .polishWithAppleIntelligence) ?? defaults.polishWithAppleIntelligence
+        polishTimeoutMilliseconds = try container.decodeIfPresent(Int.self, forKey: .polishTimeoutMilliseconds) ?? defaults.polishTimeoutMilliseconds
+        autoStopOnSilence = try container.decodeIfPresent(Bool.self, forKey: .autoStopOnSilence) ?? defaults.autoStopOnSilence
+        silenceTimeoutMilliseconds = try container.decodeIfPresent(Int.self, forKey: .silenceTimeoutMilliseconds) ?? defaults.silenceTimeoutMilliseconds
+        maxDictationSeconds = try container.decodeIfPresent(Int.self, forKey: .maxDictationSeconds) ?? defaults.maxDictationSeconds
+        minimumDictationMilliseconds = try container.decodeIfPresent(Int.self, forKey: .minimumDictationMilliseconds) ?? defaults.minimumDictationMilliseconds
+        tailGraceMilliseconds = try container.decodeIfPresent(Int.self, forKey: .tailGraceMilliseconds) ?? defaults.tailGraceMilliseconds
+        pasteRestoreDelayMilliseconds = try container.decodeIfPresent(Int.self, forKey: .pasteRestoreDelayMilliseconds) ?? defaults.pasteRestoreDelayMilliseconds
+        requireEditableField = try container.decodeIfPresent(Bool.self, forKey: .requireEditableField) ?? defaults.requireEditableField
+        showHUD = try container.decodeIfPresent(Bool.self, forKey: .showHUD) ?? defaults.showHUD
+        hudPosition = try container.decodeIfPresent(HUDPosition.self, forKey: .hudPosition) ?? defaults.hudPosition
+        playSounds = try container.decodeIfPresent(Bool.self, forKey: .playSounds) ?? defaults.playSounds
+        launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? defaults.launchAtLogin
+    }
+
+    init() {}
+
     var locale: Locale { Locale(identifier: localeIdentifier) }
 
     /// `customVocabulary` split into terms, blank lines and padding removed.
@@ -219,31 +261,36 @@ final class AppSettings {
     }
 
     /// Immutable copy, safe to hand to non-main-actor code.
+    ///
+    /// Built by assignment rather than a memberwise initialiser: `SettingsData`
+    /// has a custom `init(from:)`, which removes the synthesised memberwise
+    /// init, and a hand-written 22-parameter one is just another list to forget
+    /// a field in.
     var snapshot: SettingsData {
-        SettingsData(
-            triggerKey: triggerKey,
-            activationMode: activationMode,
-            deliveryMode: deliveryMode,
-            spacingMode: spacingMode,
-            customVocabulary: customVocabulary,
-            historyLimit: historyLimit,
-            inputDeviceUID: inputDeviceUID,
-            localeIdentifier: localeIdentifier,
-            stripFillers: stripFillers,
-            polishWithAppleIntelligence: polishWithAppleIntelligence,
-            polishTimeoutMilliseconds: polishTimeoutMilliseconds,
-            autoStopOnSilence: autoStopOnSilence,
-            silenceTimeoutMilliseconds: silenceTimeoutMilliseconds,
-            maxDictationSeconds: maxDictationSeconds,
-            minimumDictationMilliseconds: minimumDictationMilliseconds,
-            tailGraceMilliseconds: tailGraceMilliseconds,
-            pasteRestoreDelayMilliseconds: pasteRestoreDelayMilliseconds,
-            requireEditableField: requireEditableField,
-            showHUD: showHUD,
-            hudPosition: hudPosition,
-            playSounds: playSounds,
-            launchAtLogin: launchAtLogin
-        )
+        var data = SettingsData()
+        data.triggerKey = triggerKey
+        data.activationMode = activationMode
+        data.deliveryMode = deliveryMode
+        data.spacingMode = spacingMode
+        data.customVocabulary = customVocabulary
+        data.historyLimit = historyLimit
+        data.inputDeviceUID = inputDeviceUID
+        data.localeIdentifier = localeIdentifier
+        data.stripFillers = stripFillers
+        data.polishWithAppleIntelligence = polishWithAppleIntelligence
+        data.polishTimeoutMilliseconds = polishTimeoutMilliseconds
+        data.autoStopOnSilence = autoStopOnSilence
+        data.silenceTimeoutMilliseconds = silenceTimeoutMilliseconds
+        data.maxDictationSeconds = maxDictationSeconds
+        data.minimumDictationMilliseconds = minimumDictationMilliseconds
+        data.tailGraceMilliseconds = tailGraceMilliseconds
+        data.pasteRestoreDelayMilliseconds = pasteRestoreDelayMilliseconds
+        data.requireEditableField = requireEditableField
+        data.showHUD = showHUD
+        data.hudPosition = hudPosition
+        data.playSounds = playSounds
+        data.launchAtLogin = launchAtLogin
+        return data
     }
 
     /// Re-arming observation loop: reading `snapshot` touches every stored
