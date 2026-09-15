@@ -69,6 +69,8 @@ actor SpeechEngine {
         let continuation: AsyncStream<AnalyzerInput>.Continuation
         let results: Task<String, Error>
         let transcript: TranscriptBox
+        /// Only present when voice activity detection is enabled.
+        let detection: Task<Void, Error>?
     }
 
     /// Converts and forwards render-thread buffers.
@@ -107,6 +109,7 @@ actor SpeechEngine {
 
     private let audioEngine = AVAudioEngine()
     private let meter = LevelMeter()
+    private let activity = SpeechActivity()
 
     private var prepared: PreparedSession?
     private var sink: TapSink?
@@ -114,6 +117,7 @@ actor SpeechEngine {
     private var locale: Locale = Locale(identifier: "en-US")
     private var vocabulary: [String] = []
     private var inputDeviceUID: String = ""
+    private var detectSpeechActivity = false
     private var volatileTextHandler: (@Sendable (String) -> Void)?
 
     /// In-flight prewarm, so concurrent callers join it instead of each building
@@ -126,12 +130,17 @@ actor SpeechEngine {
     /// it from the main thread without contending for actor time.
     nonisolated var inputLevel: Float { meter.value }
 
+    /// How long it has been quiet, or nil if speech has not started or voice
+    /// activity detection is off.
+    nonisolated var silenceDuration: Duration? { activity.silenceDuration }
+
     // MARK: - Configuration
 
     func configure(
         locale: Locale,
         vocabulary: [String],
         inputDeviceUID: String,
+        detectSpeechActivity: Bool,
         onVolatileText: @escaping @Sendable (String) -> Void
     ) async {
         self.volatileTextHandler = onVolatileText
@@ -141,9 +150,12 @@ actor SpeechEngine {
 
         // Both are baked into the prepared session, so either changing means
         // the prepared one is stale.
-        if self.locale != locale || self.vocabulary != vocabulary {
+        if self.locale != locale
+            || self.vocabulary != vocabulary
+            || self.detectSpeechActivity != detectSpeechActivity {
             self.locale = locale
             self.vocabulary = vocabulary
+            self.detectSpeechActivity = detectSpeechActivity
             await discardPreparedSession()
         }
         startObservingConfigurationChanges()
@@ -210,15 +222,27 @@ actor SpeechEngine {
             attributeOptions: [.audioTimeRange]
         )
 
+        // Apple's own voice activity detection, as a second analyzer module.
+        // Only added when asked for: it changes the module set the analyzer is
+        // built around, and the default path should stay the well-worn one.
+        let detector: SpeechDetector? = detectSpeechActivity
+            ? SpeechDetector(
+                detectionOptions: .init(sensitivityLevel: .medium),
+                reportResults: true
+              )
+            : nil
+
+        let modules: [any SpeechModule] = detector.map { [transcriber, $0] } ?? [transcriber]
+
         let analyzer = SpeechAnalyzer(
-            modules: [transcriber],
+            modules: modules,
             options: SpeechAnalyzer.Options(
                 priority: .userInitiated,
                 modelRetention: .processLifetime
             )
         )
 
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: modules) else {
             throw EngineError.noCompatibleAudioFormat
         }
 
@@ -245,7 +269,8 @@ actor SpeechEngine {
             stream: stream,
             continuation: continuation,
             results: makeResultsTask(for: transcriber, transcript: transcript),
-            transcript: transcript
+            transcript: transcript,
+            detection: detector.map { makeDetectionTask(for: $0) }
         )
 
         Log.speech.info("Prewarmed session for \(resolved.identifier(.bcp47), privacy: .public)")
@@ -278,6 +303,16 @@ actor SpeechEngine {
                 }
             }
             return String(finalized.characters)
+        }
+    }
+
+    /// Feeds `SpeechActivity` from the detector so silence can be measured.
+    private func makeDetectionTask(for detector: SpeechDetector) -> Task<Void, Error> {
+        let activity = self.activity
+        return Task<Void, Error>.detached(priority: .userInitiated) {
+            for try await result in detector.results where result.speechDetected {
+                activity.noteSpeech()
+            }
         }
     }
 
@@ -328,6 +363,7 @@ actor SpeechEngine {
                 newSink.receive(AVAudioPCMBuffer(copying: readOnlyBuffer))
             }
 
+            activity.reset()
             audioEngine.prepare()
             try audioEngine.start()
             captureState = .capturing
@@ -382,9 +418,11 @@ actor SpeechEngine {
             text = transcript.text
         }
 
+        session.detection?.cancel()
         prepared = nil
         captureState = .idle
         meter.reset()
+        activity.reset()
 
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -405,11 +443,13 @@ actor SpeechEngine {
             session.continuation.finish()
             await session.analyzer.cancelAndFinishNow()
             session.results.cancel()
+            session.detection?.cancel()
             prepared = nil
         }
 
         captureState = .idle
         meter.reset()
+        activity.reset()
     }
 
     /// Routes capture through the user's chosen microphone.
@@ -465,6 +505,7 @@ actor SpeechEngine {
         session.continuation.finish()
         await session.analyzer.cancelAndFinishNow()
         session.results.cancel()
+        session.detection?.cancel()
         prepared = nil
     }
 

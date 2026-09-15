@@ -353,6 +353,25 @@ private struct AdvancedSettings: View {
         @Bindable var settings = controller.settings
 
         Form {
+            Toggle("Stop automatically when I stop speaking",
+                   isOn: $settings.autoStopOnSilence)
+            LabeledContent("Silence before stopping") {
+                Stepper(
+                    "\(settings.silenceTimeoutMilliseconds) ms",
+                    value: $settings.silenceTimeoutMilliseconds,
+                    in: 500...5000,
+                    step: 250
+                )
+            }
+            .disabled(!settings.autoStopOnSilence)
+            Text("Uses Apple's on-device voice activity detection. Applies to "
+               + "tap-to-start mode only — when you are holding the key, the "
+               + "key decides when to stop.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
             LabeledContent("Maximum dictation length") {
                 Stepper(
                     "\(settings.maxDictationSeconds) s",

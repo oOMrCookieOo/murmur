@@ -88,6 +88,13 @@ struct SettingsData: Codable, Equatable, Sendable {
     /// Hard ceiling on the cleanup pass. Exceeding it falls back to raw text.
     var polishTimeoutMilliseconds: Int = 1200
 
+    /// Stop automatically once the speaker has clearly finished.
+    /// Only applies in tap-to-toggle mode; in hold mode the key is the control.
+    var autoStopOnSilence: Bool = false
+
+    /// How much quiet counts as "finished".
+    var silenceTimeoutMilliseconds: Int = 1500
+
     /// Auto-stop after this long so a stuck key can't record forever.
     var maxDictationSeconds: Int = 120
 
@@ -143,6 +150,8 @@ final class AppSettings {
     var stripFillers: Bool
     var polishWithAppleIntelligence: Bool
     var polishTimeoutMilliseconds: Int
+    var autoStopOnSilence: Bool
+    var silenceTimeoutMilliseconds: Int
     var maxDictationSeconds: Int
     var minimumDictationMilliseconds: Int
     var tailGraceMilliseconds: Int
@@ -176,6 +185,8 @@ final class AppSettings {
         stripFillers = loaded.stripFillers
         polishWithAppleIntelligence = loaded.polishWithAppleIntelligence
         polishTimeoutMilliseconds = loaded.polishTimeoutMilliseconds
+        autoStopOnSilence = loaded.autoStopOnSilence
+        silenceTimeoutMilliseconds = loaded.silenceTimeoutMilliseconds
         maxDictationSeconds = loaded.maxDictationSeconds
         minimumDictationMilliseconds = loaded.minimumDictationMilliseconds
         tailGraceMilliseconds = loaded.tailGraceMilliseconds
@@ -202,6 +213,8 @@ final class AppSettings {
             stripFillers: stripFillers,
             polishWithAppleIntelligence: polishWithAppleIntelligence,
             polishTimeoutMilliseconds: polishTimeoutMilliseconds,
+            autoStopOnSilence: autoStopOnSilence,
+            silenceTimeoutMilliseconds: silenceTimeoutMilliseconds,
             maxDictationSeconds: maxDictationSeconds,
             minimumDictationMilliseconds: minimumDictationMilliseconds,
             tailGraceMilliseconds: tailGraceMilliseconds,

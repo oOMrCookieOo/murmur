@@ -150,6 +150,8 @@ final class DictationController {
             _ = settings.localeIdentifier
             _ = settings.customVocabulary
             _ = settings.inputDeviceUID
+            _ = settings.autoStopOnSilence
+            _ = settings.activationMode
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -182,7 +184,9 @@ final class DictationController {
         await engine.configure(
             locale: locale,
             vocabulary: settings.snapshot.vocabularyTerms,
-            inputDeviceUID: settings.inputDeviceUID
+            inputDeviceUID: settings.inputDeviceUID,
+            detectSpeechActivity: settings.autoStopOnSilence
+                && settings.activationMode == .toggle
         ) { [weak self] text in
             Task { @MainActor in self?.liveText = text }
         }
@@ -477,9 +481,27 @@ final class DictationController {
                 // `inputLevel` is nonisolated, so this never contends with the
                 // engine actor for the sake of an animation.
                 self.inputLevel = self.engine.inputLevel
+                self.checkForSilence()
                 try? await Task.sleep(for: .milliseconds(33))   // ~30 fps
             }
         }
+    }
+
+    /// Ends the dictation once the speaker has clearly finished.
+    ///
+    /// Toggle mode only. In hold mode the key already says when to stop, and
+    /// cutting someone off mid-pause while they are still holding it would be
+    /// both surprising and unfixable.
+    private func checkForSilence() {
+        guard settings.autoStopOnSilence,
+              settings.activationMode == .toggle,
+              phase.isRecording,
+              let quiet = engine.silenceDuration,
+              quiet > .milliseconds(settings.silenceTimeoutMilliseconds)
+        else { return }
+
+        Log.audio.info("Stopping after silence")
+        finish()
     }
 
     private func stopLevelPolling() {
