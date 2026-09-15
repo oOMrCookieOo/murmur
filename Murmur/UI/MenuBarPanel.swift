@@ -20,6 +20,12 @@ struct MenuBarPanel: View {
             modelSection
 
             deliverySection
+
+            if !controller.history.records.isEmpty {
+                Divider().padding(.vertical, 10)
+                historySection
+            }
+
             Divider().padding(.vertical, 10)
 
             footer
@@ -123,6 +129,40 @@ struct MenuBarPanel: View {
                    isOn: $bindable.polishWithAppleIntelligence)
                 .toggleStyle(.checkbox)
                 .font(.callout)
+        }
+    }
+
+    /// Recent transcripts, so a dictation that landed somewhere unexpected is
+    /// recoverable rather than gone.
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Recent").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear") { controller.history.clear() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+
+            ForEach(controller.history.records.prefix(5)) { record in
+                Button {
+                    controller.history.copyToClipboard(record)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                        Text(record.preview)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Click to copy — \(record.destination ?? "unknown app")")
+            }
         }
     }
 

@@ -106,6 +106,7 @@ actor SpeechEngine {
     private var sink: TapSink?
     private var captureState: CaptureState = .idle
     private var locale: Locale = Locale(identifier: "en-US")
+    private var vocabulary: [String] = []
     private var volatileTextHandler: (@Sendable (String) -> Void)?
 
     /// In-flight prewarm, so concurrent callers join it instead of each building
@@ -120,12 +121,18 @@ actor SpeechEngine {
 
     // MARK: - Configuration
 
-    func configure(locale: Locale, onVolatileText: @escaping @Sendable (String) -> Void) async {
+    func configure(
+        locale: Locale,
+        vocabulary: [String],
+        onVolatileText: @escaping @Sendable (String) -> Void
+    ) async {
         self.volatileTextHandler = onVolatileText
 
-        if self.locale != locale {
+        // Both are baked into the prepared session, so either changing means
+        // the prepared one is stale.
+        if self.locale != locale || self.vocabulary != vocabulary {
             self.locale = locale
-            // The prepared session is for the wrong language.
+            self.vocabulary = vocabulary
             await discardPreparedSession()
         }
         startObservingConfigurationChanges()
@@ -202,6 +209,17 @@ actor SpeechEngine {
 
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
             throw EngineError.noCompatibleAudioFormat
+        }
+
+        // Bias recognition toward the user's own words — names, jargon, project
+        // nouns. This is the on-device equivalent of a custom dictionary, and
+        // it is the single biggest accuracy lever available to us: the model is
+        // fixed, but what it expects to hear is not.
+        if !vocabulary.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings = [.general: vocabulary]
+            try await analyzer.setContext(context)
+            Log.speech.info("Applied \(self.vocabulary.count, privacy: .public) vocabulary terms")
         }
 
         try await analyzer.prepareToAnalyze(in: format)

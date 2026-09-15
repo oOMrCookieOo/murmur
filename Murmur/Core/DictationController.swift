@@ -33,6 +33,7 @@ final class DictationController {
 
     let settings: AppSettings
     let permissions: PermissionsModel
+    let history = TranscriptHistory()
 
     // MARK: - Collaborators
 
@@ -123,6 +124,7 @@ final class DictationController {
         withObservationTracking {
             _ = settings.triggerKey
             _ = settings.localeIdentifier
+            _ = settings.customVocabulary
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -152,7 +154,10 @@ final class DictationController {
 
         guard modelState.isReady else { return }
 
-        await engine.configure(locale: locale) { [weak self] text in
+        await engine.configure(
+            locale: locale,
+            vocabulary: settings.snapshot.vocabularyTerms
+        ) { [weak self] text in
             Task { @MainActor in self?.liveText = text }
         }
 
@@ -309,6 +314,8 @@ final class DictationController {
 
         phase = .delivering
         let delivery = await TextInjector.deliver(text, to: target, settings: snapshot)
+
+        history.add(text, destination: target?.displayName, limit: snapshot.historyLimit)
 
         switch delivery {
         case .pasted:

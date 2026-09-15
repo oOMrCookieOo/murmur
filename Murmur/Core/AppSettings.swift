@@ -66,6 +66,14 @@ struct SettingsData: Codable, Equatable, Sendable {
     /// produces "...one two three.This is the next one."
     var spacingMode: SpacingMode = .smart
 
+    /// Words and phrases to bias recognition toward: names, jargon, project
+    /// nouns. One per line, edited as free text because that is how people
+    /// think about a word list.
+    var customVocabulary: String = ""
+
+    /// How many past transcripts to keep for recovery. In memory only.
+    var historyLimit: Int = 20
+
     /// BCP-47 identifier, e.g. "en-US".
     var localeIdentifier: String = "en-US"
 
@@ -100,6 +108,14 @@ struct SettingsData: Codable, Equatable, Sendable {
     var launchAtLogin: Bool = false
 
     var locale: Locale { Locale(identifier: localeIdentifier) }
+
+    /// `customVocabulary` split into terms, blank lines and padding removed.
+    var vocabularyTerms: [String] {
+        customVocabulary
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 }
 
 /// Observable, auto-persisting preference store.
@@ -112,6 +128,8 @@ final class AppSettings {
     var activationMode: ActivationMode
     var deliveryMode: DeliveryMode
     var spacingMode: SpacingMode
+    var customVocabulary: String
+    var historyLimit: Int
     var localeIdentifier: String
     var stripFillers: Bool
     var polishWithAppleIntelligence: Bool
@@ -141,6 +159,8 @@ final class AppSettings {
         activationMode = loaded.activationMode
         deliveryMode = loaded.deliveryMode
         spacingMode = loaded.spacingMode
+        customVocabulary = loaded.customVocabulary
+        historyLimit = loaded.historyLimit
         localeIdentifier = loaded.localeIdentifier
         stripFillers = loaded.stripFillers
         polishWithAppleIntelligence = loaded.polishWithAppleIntelligence
@@ -163,6 +183,8 @@ final class AppSettings {
             activationMode: activationMode,
             deliveryMode: deliveryMode,
             spacingMode: spacingMode,
+            customVocabulary: customVocabulary,
+            historyLimit: historyLimit,
             localeIdentifier: localeIdentifier,
             stripFillers: stripFillers,
             polishWithAppleIntelligence: polishWithAppleIntelligence,

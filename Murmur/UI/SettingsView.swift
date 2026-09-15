@@ -12,6 +12,9 @@ struct SettingsView: View {
             SpeechSettings(controller: controller)
                 .tabItem { Label("Speech", systemImage: "waveform") }
 
+            VocabularySettings(controller: controller)
+                .tabItem { Label("Vocabulary", systemImage: "text.book.closed") }
+
             CleanupSettings(controller: controller)
                 .tabItem { Label("Cleanup", systemImage: "wand.and.sparkles") }
 
@@ -155,6 +158,49 @@ private struct SpeechSettings: View {
     private func displayName(for locale: Locale) -> String {
         let id = locale.identifier(.bcp47)
         return Locale.current.localizedString(forIdentifier: locale.identifier) ?? id
+    }
+}
+
+// MARK: - Vocabulary
+
+private struct VocabularySettings: View {
+    @Bindable var controller: DictationController
+
+    var body: some View {
+        @Bindable var settings = controller.settings
+
+        Form {
+            Section {
+                Text("Words and phrases to listen out for — names, jargon, "
+                   + "project nouns, anything the transcriber keeps getting "
+                   + "wrong. One per line.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextEditor(text: $settings.customVocabulary)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 180)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+
+                LabeledContent("Terms") {
+                    Text("\(settings.snapshot.vocabularyTerms.count)")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Text("This biases recognition toward your words without "
+                   + "retraining anything, and stays entirely on-device. "
+                   + "Changing it rebuilds the speech session, which takes a "
+                   + "moment the next time you dictate.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.vertical, 8)
     }
 }
 
@@ -316,6 +362,21 @@ private struct AdvancedSettings: View {
                     step: 50
                 )
             }
+
+            LabeledContent("Keep recent transcripts") {
+                Stepper(
+                    "\(settings.historyLimit)",
+                    value: $settings.historyLimit,
+                    in: 0...100,
+                    step: 5
+                )
+            }
+            Text("Shown in the menu so a dictation that went somewhere "
+               + "unexpected can be copied back. Held in memory only and "
+               + "cleared when Murmur quits — a dictation app that logged "
+               + "everything you said to disk would be a worse trade.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             LabeledContent("Restore clipboard after") {
                 Stepper(
