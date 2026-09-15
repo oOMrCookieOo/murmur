@@ -193,15 +193,24 @@ enum TextInjector {
         return nil
     }
 
+    /// Roles that accept typed text.
+    ///
+    /// An allow-list, not a deny-list. The deny-list version listed obvious
+    /// non-text roles like AXButton and AXImage and allowed everything else —
+    /// so the Finder desktop, which reports a container role, sailed through and
+    /// Cmd+V turned a dictation into a .textClipping file on the Desktop.
+    private static let textRoles: Set<String> = [
+        kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole,
+        kAXSearchFieldSubrole, "AXWebArea",
+    ]
+
     /// Best-effort Accessibility check for whether the focused element takes text.
     ///
-    /// Deliberately lenient — it returns true whenever it cannot tell. Many apps
-    /// (Electron, terminals, some Java toolkits) expose a focused element that
-    /// looks inert but pastes perfectly well, so treating "unknown" as "unsafe"
-    /// would block legitimate pastes. Only clearly non-text roles are rejected.
-    ///
-    /// What it does buy: it stops a Cmd+V going to the Finder, where paste means
-    /// "duplicate a file" rather than "insert text".
+    /// Still lenient about the *unknown* case: an app that exposes no focused
+    /// element at all is allowed, because many (Electron, terminals, some Java
+    /// toolkits) paste perfectly well while telling Accessibility very little.
+    /// What changed is that a known, non-text role is now a refusal rather than
+    /// a shrug.
     private static func focusedElementLooksEditable(pid: pid_t) -> Bool {
         let app = AXUIElementCreateApplication(pid)
 
@@ -237,14 +246,23 @@ enum TextInjector {
         var roleValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
               let role = roleValue as? String
-        else { return true }
+        else {
+            // No role at all: we know nothing, so allow.
+            return true
+        }
 
-        let definitelyNotText: Set<String> = [
-            kAXButtonRole, kAXCheckBoxRole, kAXRadioButtonRole,
-            kAXMenuItemRole, kAXMenuBarItemRole, kAXImageRole,
-            kAXSliderRole, kAXProgressIndicatorRole,
-        ]
-        return !definitelyNotText.contains(role)
+        if textRoles.contains(role) { return true }
+
+        // A subrole can identify a text control whose role is generic.
+        var subroleValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleValue) == .success,
+           let subrole = subroleValue as? String,
+           textRoles.contains(subrole) {
+            return true
+        }
+
+        Log.output.info("Focused element is \(role, privacy: .public); not pasting")
+        return false
     }
 
     // MARK: - Clipboard
