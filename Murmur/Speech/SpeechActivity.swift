@@ -4,9 +4,20 @@ import os
 /// Tracks when speech was last heard, so a dictation can stop itself once the
 /// speaker has clearly finished.
 ///
-/// Fed by `SpeechDetector` — Apple's on-device voice activity detection — and
-/// read without touching the engine actor, the same approach as `LevelMeter`.
+/// Fed from the microphone level computed for the HUD, and read without
+/// touching the engine actor — the same approach as `LevelMeter`.
+///
+/// `SpeechDetector` was tried first and produced no results at all against real
+/// speech, so auto-stop could never have fired. The level is a cruder signal but
+/// it demonstrably works, costs nothing extra, and keeps the analyzer to a
+/// single module.
 final class SpeechActivity: Sendable {
+
+    /// Normalised level above which a buffer counts as speech rather than room
+    /// tone. The scale is dB-mapped, so this sits comfortably above the noise
+    /// floor of a quiet room without needing the speaker to project.
+    static let speechThreshold: Float = 0.22
+
     private struct State {
         var lastSpeechAt: ContinuousClock.Instant?
         var hasHeardSpeech = false

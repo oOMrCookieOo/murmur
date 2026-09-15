@@ -385,9 +385,8 @@ private struct SilenceSection: View {
         }
         .disabled(!settings.autoStopOnSilence)
 
-        Text("Uses Apple's on-device voice activity detection. Applies to "
-           + "tap-to-start mode only — when you are holding the key, the key "
-           + "decides when to stop.")
+        Text("Watches the microphone level. Applies to tap-to-start mode only "
+           + "— when you are holding the key, the key decides when to stop.")
             .font(.caption)
             .foregroundStyle(.secondary)
     }

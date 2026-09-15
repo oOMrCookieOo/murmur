@@ -69,8 +69,6 @@ actor SpeechEngine {
         let continuation: AsyncStream<AnalyzerInput>.Continuation
         let results: Task<String, Error>
         let transcript: TranscriptBox
-        /// Only present when voice activity detection is enabled.
-        let detection: Task<Void, Error>?
     }
 
     /// Converts and forwards render-thread buffers.
@@ -83,6 +81,7 @@ actor SpeechEngine {
         private let analyzerFormat: AVAudioFormat
         private let continuation: AsyncStream<AnalyzerInput>.Continuation
         private let meter: LevelMeter
+        private let activity: SpeechActivity
         private let lastBuffer = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
 
         /// When the most recent buffer arrived, so `endCapture` can tell
@@ -91,15 +90,20 @@ actor SpeechEngine {
 
         init(analyzerFormat: AVAudioFormat,
              continuation: AsyncStream<AnalyzerInput>.Continuation,
-             meter: LevelMeter) {
+             meter: LevelMeter,
+             activity: SpeechActivity) {
             self.analyzerFormat = analyzerFormat
             self.continuation = continuation
             self.meter = meter
+            self.activity = activity
         }
 
         func receive(_ buffer: AVAudioPCMBuffer) {
             lastBuffer.withLock { $0 = .now }
-            meter.update(LevelMeter.normalisedLevel(of: buffer))
+
+            let level = LevelMeter.normalisedLevel(of: buffer)
+            meter.update(level)
+            if level > SpeechActivity.speechThreshold { activity.noteSpeech() }
             // No unbounded work here: this is the render thread. Dropping one
             // buffer degrades a word; blocking glitches the audio.
             guard let converted = try? converter.convertBuffer(buffer, to: analyzerFormat) else { return }
@@ -114,9 +118,18 @@ actor SpeechEngine {
     private var prepared: PreparedSession?
     private var sink: TapSink?
     private var captureState: CaptureState = .idle
+    /// Bumped whenever a capture is torn down. `beginCapture` re-checks it after
+    /// every await, so a stop or cancel arriving mid-start aborts the start
+    /// instead of letting it finish into a state nobody owns.
+    private var captureGeneration: UInt64 = 0
     private var locale: Locale = Locale(identifier: "en-US")
     private var vocabulary: [String] = []
     private var inputDeviceUID: String = ""
+    /// Resolved once when the preference changes, not per key-down: resolving a
+    /// UID enumerates every audio device on the system, and doing that between
+    /// key-down and the microphone opening both adds latency and blocks the
+    /// actor against a wedged coreaudiod.
+    private var inputDevice: AudioInputDevice?
     private var detectSpeechActivity = false
     private var volatileTextHandler: (@Sendable (String) -> Void)?
 
@@ -146,7 +159,10 @@ actor SpeechEngine {
         self.volatileTextHandler = onVolatileText
         // Not part of the prepared session: the device is selected on the audio
         // unit at capture time, so changing it needs no rebuild.
-        self.inputDeviceUID = inputDeviceUID
+        if self.inputDeviceUID != inputDeviceUID || (inputDevice == nil && !inputDeviceUID.isEmpty) {
+            self.inputDeviceUID = inputDeviceUID
+            self.inputDevice = inputDeviceUID.isEmpty ? nil : AudioDevices.device(uid: inputDeviceUID)
+        }
 
         // Both are baked into the prepared session, so either changing means
         // the prepared one is stale.
@@ -222,17 +238,16 @@ actor SpeechEngine {
             attributeOptions: [.audioTimeRange]
         )
 
-        // Apple's own voice activity detection, as a second analyzer module.
-        // Only added when asked for: it changes the module set the analyzer is
-        // built around, and the default path should stay the well-worn one.
-        let detector: SpeechDetector? = detectSpeechActivity
-            ? SpeechDetector(
-                detectionOptions: .init(sensitivityLevel: .medium),
-                reportResults: true
-              )
-            : nil
-
-        let modules: [any SpeechModule] = detector.map { [transcriber, $0] } ?? [transcriber]
+        // Voice activity is derived from the microphone level we already
+        // compute for the HUD, not from `SpeechDetector`.
+        //
+        // The detector was tried and removed: fed 11.8 s of real speech that
+        // the transcriber handled correctly from the same stream, it emitted
+        // zero results in every configuration, so auto-stop could never fire.
+        // Adding it also meant a second analyzer module, an extra asset
+        // dependency, and a hard crash if it were ever built without a
+        // transcriber. The level meter costs nothing and demonstrably works.
+        let modules: [any SpeechModule] = [transcriber]
 
         let analyzer = SpeechAnalyzer(
             modules: modules,
@@ -269,8 +284,7 @@ actor SpeechEngine {
             stream: stream,
             continuation: continuation,
             results: makeResultsTask(for: transcriber, transcript: transcript),
-            transcript: transcript,
-            detection: detector.map { makeDetectionTask(for: $0) }
+            transcript: transcript
         )
 
         Log.speech.info("Prewarmed session for \(resolved.identifier(.bcp47), privacy: .public)")
@@ -306,31 +320,35 @@ actor SpeechEngine {
         }
     }
 
-    /// Feeds `SpeechActivity` from the detector so silence can be measured.
-    private func makeDetectionTask(for detector: SpeechDetector) -> Task<Void, Error> {
-        let activity = self.activity
-        return Task<Void, Error>.detached(priority: .userInitiated) {
-            for try await result in detector.results where result.speechDetected {
-                activity.noteSpeech()
-            }
-        }
-    }
-
     // MARK: - Capture
 
     func beginCapture() async throws {
-        guard captureState == .idle else { return }
+        guard captureState == .idle else {
+            Log.audio.info("Start ignored while \(String(describing: self.captureState), privacy: .public)")
+            return
+        }
         // Claimed before the first await, which is what closes the re-entrancy
         // hole: the mic-permission dialog alone can suspend here for seconds.
         captureState = .starting
+        captureGeneration &+= 1
+        let generation = captureGeneration
+
+        /// True once a stop or cancel has invalidated this start.
+        func superseded() -> Bool { generation != captureGeneration }
 
         do {
             guard await Self.ensureMicrophoneAccess() else {
                 throw EngineError.microphonePermissionDenied
             }
+            if superseded() { return }
 
-            // Normally a no-op; covers a failed earlier prewarm.
-            if prepared == nil { try await prewarm() }
+            // `performPrewarm`, not `prewarm`: the latter guards on
+            // `captureState == .idle`, which is never true here, so it would
+            // return without preparing anything and the guard below would then
+            // throw a completely misleading "no compatible audio format".
+            if prepared == nil { try await performPrewarm() }
+            if superseded() { return }
+
             guard let session = prepared else { throw EngineError.noCompatibleAudioFormat }
 
             let input = audioEngine.inputNode
@@ -344,11 +362,17 @@ actor SpeechEngine {
             }
 
             try await session.analyzer.start(inputSequence: session.stream)
+            // Last chance to bail before anything is actually opened.
+            if superseded() {
+                await session.analyzer.cancelAndFinishNow()
+                return
+            }
 
             let newSink = TapSink(
                 analyzerFormat: session.analyzerFormat,
                 continuation: session.continuation,
-                meter: meter
+                meter: meter,
+                activity: activity
             )
             sink = newSink
 
@@ -387,7 +411,21 @@ actor SpeechEngine {
     ///   stream at key-up discards up to 100 ms — enough to clip the last word
     ///   when someone releases the key on the final syllable.
     func endCapture(tailGraceMilliseconds: Int = 150) async throws -> String {
-        guard captureState == .capturing, let session = prepared else { return "" }
+        if captureState == .starting {
+            // The user finished before the engine did. Abandoning is right:
+            // letting the start complete would leave the microphone open with
+            // nobody listening, and the audio captured after that would be
+            // transcribed into the *next* dictation.
+            Log.audio.info("Stop arrived mid-start; abandoning the capture")
+            await resetAfterFailure()
+            return ""
+        }
+        guard captureState == .capturing, let session = prepared else {
+            if captureState != .idle {
+                Log.audio.info("Stop ignored while \(String(describing: self.captureState), privacy: .public)")
+            }
+            return ""
+        }
         captureState = .finishing
 
         await waitForFinalBuffer(timeoutMilliseconds: tailGraceMilliseconds)
@@ -418,7 +456,6 @@ actor SpeechEngine {
             text = transcript.text
         }
 
-        session.detection?.cancel()
         prepared = nil
         captureState = .idle
         meter.reset()
@@ -437,14 +474,16 @@ actor SpeechEngine {
     /// Single recovery path, used by both cancellation and failure.
     /// Deliberately tolerant: it must work from any partially-started state.
     private func resetAfterFailure() async {
+        // Invalidate any start still in flight so it unwinds instead of
+        // finishing into a session nobody owns.
+        captureGeneration &+= 1
         teardownAudio()
 
         if let session = prepared {
             session.continuation.finish()
             await session.analyzer.cancelAndFinishNow()
             session.results.cancel()
-            session.detection?.cancel()
-            prepared = nil
+                prepared = nil
         }
 
         captureState = .idle
@@ -459,7 +498,7 @@ actor SpeechEngine {
     private func selectInputDevice(on input: AVAudioInputNode) {
         guard !inputDeviceUID.isEmpty else { return }
 
-        guard let device = AudioDevices.device(uid: inputDeviceUID) else {
+        guard let device = inputDevice else {
             Log.audio.warning("Chosen microphone is not connected; using the system default")
             return
         }
@@ -505,7 +544,6 @@ actor SpeechEngine {
         session.continuation.finish()
         await session.analyzer.cancelAndFinishNow()
         session.results.cancel()
-        session.detection?.cancel()
         prepared = nil
     }
 

@@ -141,8 +141,12 @@ default if it is unplugged.
 
 ### Stopping automatically
 
-**Settings → Advanced → "Stop automatically when I stop speaking"**, using
-Apple's on-device voice activity detection.
+**Settings → Advanced → "Stop automatically when I stop speaking."**
+
+Driven by the microphone level. Apple's `SpeechDetector` was tried first and
+removed: fed real speech that the transcriber handled correctly from the same
+stream, it emitted no results at all, so auto-stop could never have fired. It
+also cost a second analyzer module and an extra asset dependency for nothing.
 
 Tap-to-start mode only. While you are holding the key, the key already says when
 to stop, and being cut off mid-pause would be both surprising and unfixable.
@@ -263,7 +267,7 @@ Murmur/
                 BufferConverter        mic format → analyzer format
                 ModelCatalog           AssetInventory download / reserve
                 LevelMeter             render-thread-safe input level
-                SpeechActivity         voice activity, for auto-stop
+                SpeechActivity         silence tracking, for auto-stop
                 AudioDevices           CoreAudio microphone enumeration
   Input/        HotkeyMonitor          CGEventTap on a dedicated thread
                 TriggerKey             modifier keys + device-dependent masks
