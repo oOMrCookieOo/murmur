@@ -21,7 +21,7 @@ struct MenuBarPanel: View {
 
             deliverySection
 
-            if !controller.history.records.isEmpty {
+            if controller.settings.historyLimit > 0 {
                 Divider().padding(.vertical, 10)
                 historySection
             }
@@ -141,14 +141,27 @@ struct MenuBarPanel: View {
 
     /// Recent transcripts, so a dictation that landed somewhere unexpected is
     /// recoverable rather than gone.
+    ///
+    /// Always shown, including when empty. Hiding it until the first dictation
+    /// meant there was no way to discover the feature existed, or to tell
+    /// "nothing recorded yet" apart from "this is broken".
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Recent").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Clear") { controller.history.clear() }
-                    .buttonStyle(.link)
+                if !controller.history.records.isEmpty {
+                    Button("Clear") { controller.history.clear() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+            }
+
+            if controller.history.records.isEmpty {
+                Text("Nothing yet — your dictations will appear here.")
                     .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             ForEach(controller.history.records.prefix(5)) { record in

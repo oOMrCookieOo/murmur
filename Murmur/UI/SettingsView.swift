@@ -425,11 +425,30 @@ private struct AdvancedSettings: View {
                 )
             }
             Text("Shown in the menu so a dictation that went somewhere "
-               + "unexpected can be copied back. Held in memory only and "
-               + "cleared when Murmur quits — a dictation app that logged "
-               + "everything you said to disk would be a worse trade.")
+               + "unexpected can be copied back. Saved to disk so it survives "
+               + "restarts. Set 0 to keep nothing.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Text("The file is plain JSON in your Application Support folder, "
+               + "readable only by your account and never sent anywhere — but "
+               + "it is not encrypted, so it is a running record of what you "
+               + "have dictated. \"Clear\" in the menu deletes it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("Reveal history file") {
+                    guard let url = controller.history.storageURL else { return }
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                .disabled(controller.history.storageURL == nil)
+
+                Button("Delete history now") {
+                    controller.history.clear()
+                }
+                .disabled(controller.history.records.isEmpty)
+            }
 
             LabeledContent("Restore clipboard after") {
                 Stepper(
