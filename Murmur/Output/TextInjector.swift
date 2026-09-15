@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import CoreGraphics
+import os
 
 /// Gets transcribed text into the app the user was working in.
 ///
@@ -232,13 +233,71 @@ enum TextInjector {
 
     // MARK: - Clipboard
 
-    /// A pasteboard item carrying the text plus the community-standard
-    /// "do not archive me" marker that clipboard managers honour.
-    private static func concealedItem(for text: String) -> NSPasteboardItem {
+    nonisolated static let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+
+    /// Supplies the transcript lazily, so we learn the exact moment a reader
+    /// takes it.
+    ///
+    /// This is how the restore stops being a guess. Instead of sleeping a fixed
+    /// 250 ms and hoping the target read the clipboard first, we put the old
+    /// contents back the instant the read actually happens.
+    ///
+    /// It is an optimisation, never a correctness requirement, because it can
+    /// be defeated: the first read caches the value and no later read re-fires
+    /// the callback, so any clipboard manager that reads on change consumes the
+    /// signal before the target app does. When that happens we simply fall back
+    /// to the timed restore, which is what the app did before.
+    private final class TranscriptDataProvider: NSObject, NSPasteboardItemDataProvider, @unchecked Sendable {
+        private let text: String
+        private let lastRead = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
+
+        init(text: String) {
+            self.text = text
+            super.init()
+        }
+
+        /// When the transcript was most recently handed to a reader.
+        var lastReadAt: ContinuousClock.Instant? { lastRead.withLock { $0 } }
+
+        func pasteboard(
+            _ pasteboard: NSPasteboard?,
+            item: NSPasteboardItem,
+            provideDataForType type: NSPasteboard.PasteboardType
+        ) {
+            if type == concealedType {
+                item.setString("", forType: type)
+                return
+            }
+            item.setString(text, forType: type)
+            lastRead.withLock { $0 = .now }
+        }
+
+        func pasteboardFinishedWithDataProvider(_ pasteboard: NSPasteboard) {}
+    }
+
+    /// A pasteboard item that yields the transcript on demand and carries the
+    /// community-standard "do not archive me" marker.
+    private static func transcriptItem(provider: TranscriptDataProvider) -> NSPasteboardItem {
         let item = NSPasteboardItem()
-        item.setString(text, forType: .string)
-        item.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        item.setDataProvider(provider, forTypes: [.string, concealedType])
         return item
+    }
+
+    /// Waits for the transcript to actually be read, up to `timeoutMilliseconds`.
+    /// - Returns: whether a read was observed after `postedAt`.
+    private static func waitForRead(
+        from provider: TranscriptDataProvider,
+        after postedAt: ContinuousClock.Instant,
+        timeoutMilliseconds: Int
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
+        while ContinuousClock.now < deadline {
+            // Only reads that happen after the keystroke count. An earlier one
+            // is a clipboard manager, not the target app.
+            if let read = provider.lastReadAt, read > postedAt { return true }
+            try? await Task.sleep(for: .milliseconds(3))
+        }
+        return false
     }
 
     @discardableResult
@@ -275,7 +334,8 @@ enum TextInjector {
         //
         // Only on this path: in clipboard-only mode the clipboard IS the
         // deliverable, and suppressing history there would be wrong.
-        guard pasteboard.writeObjects([concealedItem(for: text)]) else {
+        let provider = TranscriptDataProvider(text: text)
+        guard pasteboard.writeObjects([transcriptItem(provider: provider)]) else {
             // The clipboard has already been cleared, so the user's contents are
             // gone unless we put them back right now.
             previous.restore(to: pasteboard, onlyIfUnchangedFrom: pasteboard.changeCount)
@@ -304,11 +364,17 @@ enum TextInjector {
             return DeliveryReport(.leftOnClipboard(reason: "Could not send the paste keystroke"))
         }
 
-        // Give the target app time to actually read the pasteboard before we
-        // put the old contents back. Too short and the target reads the
-        // *restored* contents, pasting the user's previous clipboard into their
-        // document — worse than pasting nothing.
-        try? await Task.sleep(for: .milliseconds(settings.pasteRestoreDelayMilliseconds))
+        // Restore as soon as the target has actually taken the text. Falling
+        // back to the full delay keeps the old behaviour when the read cannot
+        // be observed, so this can only ever be faster or the same.
+        let confirmed = await waitForRead(
+            from: provider,
+            after: pastedAt,
+            timeoutMilliseconds: settings.pasteRestoreDelayMilliseconds
+        )
+        if !confirmed {
+            Log.output.info("Paste read not observed; restoring on the timer instead")
+        }
         previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
 
         if let target { lastPasteTarget = (target.processIdentifier, .now) }

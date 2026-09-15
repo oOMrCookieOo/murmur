@@ -36,6 +36,8 @@ final class DictationController {
     /// Locales this Mac can transcribe. Loaded once at launch; the Settings
     /// language picker reads it.
     private(set) var supportedLocales: [Locale] = []
+    /// Microphones currently attached, for the Settings picker.
+    private(set) var inputDevices: [AudioInputDevice] = []
 
     let settings: AppSettings
     let permissions: PermissionsModel
@@ -79,10 +81,17 @@ final class DictationController {
         observeSettings()
         hud.attach(controller: self)
 
+        inputDevices = AudioDevices.inputs()
+
         Task {
             supportedLocales = await ModelCatalog.supportedLocales()
             await refreshModelAndPrewarm()
         }
+    }
+
+    /// Re-reads attached microphones. Cheap, and devices come and go.
+    func refreshInputDevices() {
+        inputDevices = AudioDevices.inputs()
     }
 
     func stop() {
@@ -140,6 +149,7 @@ final class DictationController {
             _ = settings.triggerKey
             _ = settings.localeIdentifier
             _ = settings.customVocabulary
+            _ = settings.inputDeviceUID
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -171,7 +181,8 @@ final class DictationController {
 
         await engine.configure(
             locale: locale,
-            vocabulary: settings.snapshot.vocabularyTerms
+            vocabulary: settings.snapshot.vocabularyTerms,
+            inputDeviceUID: settings.inputDeviceUID
         ) { [weak self] text in
             Task { @MainActor in self?.liveText = text }
         }
@@ -300,7 +311,7 @@ final class DictationController {
         let startedAt = keyUpAt ?? .now
         let raw: String
         do {
-            raw = try await engine.endCapture()
+            raw = try await engine.endCapture(tailGraceMilliseconds: snapshot.tailGraceMilliseconds)
         } catch {
             await abort(reason: error.localizedDescription)
             return

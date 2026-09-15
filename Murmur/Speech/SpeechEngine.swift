@@ -81,6 +81,11 @@ actor SpeechEngine {
         private let analyzerFormat: AVAudioFormat
         private let continuation: AsyncStream<AnalyzerInput>.Continuation
         private let meter: LevelMeter
+        private let lastBuffer = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
+
+        /// When the most recent buffer arrived, so `endCapture` can tell
+        /// whether the tail of the utterance has landed yet.
+        var lastBufferAt: ContinuousClock.Instant? { lastBuffer.withLock { $0 } }
 
         init(analyzerFormat: AVAudioFormat,
              continuation: AsyncStream<AnalyzerInput>.Continuation,
@@ -91,6 +96,7 @@ actor SpeechEngine {
         }
 
         func receive(_ buffer: AVAudioPCMBuffer) {
+            lastBuffer.withLock { $0 = .now }
             meter.update(LevelMeter.normalisedLevel(of: buffer))
             // No unbounded work here: this is the render thread. Dropping one
             // buffer degrades a word; blocking glitches the audio.
@@ -107,6 +113,7 @@ actor SpeechEngine {
     private var captureState: CaptureState = .idle
     private var locale: Locale = Locale(identifier: "en-US")
     private var vocabulary: [String] = []
+    private var inputDeviceUID: String = ""
     private var volatileTextHandler: (@Sendable (String) -> Void)?
 
     /// In-flight prewarm, so concurrent callers join it instead of each building
@@ -124,9 +131,13 @@ actor SpeechEngine {
     func configure(
         locale: Locale,
         vocabulary: [String],
+        inputDeviceUID: String,
         onVolatileText: @escaping @Sendable (String) -> Void
     ) async {
         self.volatileTextHandler = onVolatileText
+        // Not part of the prepared session: the device is selected on the audio
+        // unit at capture time, so changing it needs no rebuild.
+        self.inputDeviceUID = inputDeviceUID
 
         // Both are baked into the prepared session, so either changing means
         // the prepared one is stale.
@@ -288,6 +299,10 @@ actor SpeechEngine {
             guard let session = prepared else { throw EngineError.noCompatibleAudioFormat }
 
             let input = audioEngine.inputNode
+            selectInputDevice(on: input)
+
+            // Read the format *after* selecting the device: a different
+            // microphone may run at a different sample rate.
             let inputFormat = input.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
                 throw EngineError.noInputDevice
@@ -329,9 +344,17 @@ actor SpeechEngine {
     }
 
     /// Stops the mic, drains the analyzer and returns the final transcript.
-    func endCapture() async throws -> String {
+    ///
+    /// - Parameter tailGraceMilliseconds: how long to keep the microphone open
+    ///   waiting for the final buffer. The tap is clamped to ~100 ms buffers by
+    ///   the system and `AVAudioEngine.stop()` flushes nothing, so cutting the
+    ///   stream at key-up discards up to 100 ms — enough to clip the last word
+    ///   when someone releases the key on the final syllable.
+    func endCapture(tailGraceMilliseconds: Int = 150) async throws -> String {
         guard captureState == .capturing, let session = prepared else { return "" }
         captureState = .finishing
+
+        await waitForFinalBuffer(timeoutMilliseconds: tailGraceMilliseconds)
 
         teardownAudio()
         session.continuation.finish()
@@ -387,6 +410,48 @@ actor SpeechEngine {
 
         captureState = .idle
         meter.reset()
+    }
+
+    /// Routes capture through the user's chosen microphone.
+    ///
+    /// Best effort: an unplugged device simply falls through to the system
+    /// default, which is better than refusing to record.
+    private func selectInputDevice(on input: AVAudioInputNode) {
+        guard !inputDeviceUID.isEmpty else { return }
+
+        guard let device = AudioDevices.device(uid: inputDeviceUID) else {
+            Log.audio.warning("Chosen microphone is not connected; using the system default")
+            return
+        }
+
+        do {
+            // `withAUAudioUnit` is the macOS 27 replacement for the `auAudioUnit`
+            // property, which is now deprecated.
+            try input.withAUAudioUnit { unit in
+                try unit.setDeviceID(device.id)
+            }
+            Log.audio.info("Input device: \(device.name, privacy: .public)")
+        } catch {
+            Log.audio.warning("Could not select microphone: \(error.localizedDescription)")
+        }
+    }
+
+    /// Waits for one more buffer to arrive after the key was released.
+    ///
+    /// Adaptive rather than a fixed sleep: a buffer boundary may be 5 ms away or
+    /// 100 ms away, and sleeping the worst case every time would hand the whole
+    /// saving straight back as latency.
+    private func waitForFinalBuffer(timeoutMilliseconds: Int) async {
+        guard timeoutMilliseconds > 0, let sink else { return }
+
+        let mark = ContinuousClock.now
+        let deadline = mark + .milliseconds(timeoutMilliseconds)
+
+        while ContinuousClock.now < deadline {
+            if let arrived = sink.lastBufferAt, arrived > mark { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        Log.audio.info("No final buffer within the tail grace window")
     }
 
     private func teardownAudio() {

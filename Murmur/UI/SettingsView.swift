@@ -59,6 +59,17 @@ private struct GeneralSettings: View {
                 }
             }
 
+            Picker("Microphone", selection: $settings.inputDeviceUID) {
+                Text("System default").tag("")
+                ForEach(controller.inputDevices) { device in
+                    Text(device.name).tag(device.uid)
+                }
+            }
+            Text("System default follows whatever macOS is using, including "
+               + "AirPods connecting and disconnecting.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Picker("Insert a space before", selection: $settings.spacingMode) {
                 ForEach(SpacingMode.allCases) { mode in
                     Text(mode.displayName).tag(mode)
@@ -81,6 +92,7 @@ private struct GeneralSettings: View {
         }
         .formStyle(.grouped)
         .padding(.vertical, 8)
+        .task { controller.refreshInputDevices() }
     }
 
     private func applyLaunchAtLogin(_ enabled: Bool) {
@@ -362,6 +374,22 @@ private struct AdvancedSettings: View {
                     step: 50
                 )
             }
+
+            LabeledContent("Keep listening after release") {
+                Stepper(
+                    "\(settings.tailGraceMilliseconds) ms",
+                    value: $settings.tailGraceMilliseconds,
+                    in: 0...500,
+                    step: 25
+                )
+            }
+            Text("The microphone delivers audio in ~100 ms blocks and discards "
+               + "whatever is mid-block when it stops, so releasing the key on "
+               + "the last syllable can clip a word. Murmur waits for that final "
+               + "block to arrive — usually far less than the limit. Set 0 for "
+               + "the lowest possible latency.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             LabeledContent("Keep recent transcripts") {
                 Stepper(

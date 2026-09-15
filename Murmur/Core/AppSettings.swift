@@ -74,6 +74,10 @@ struct SettingsData: Codable, Equatable, Sendable {
     /// How many past transcripts to keep for recovery. In memory only.
     var historyLimit: Int = 20
 
+    /// Persisted microphone choice, by stable UID. Empty means "system default",
+    /// which is what most people want and what follows AirPods in and out.
+    var inputDeviceUID: String = ""
+
     /// BCP-47 identifier, e.g. "en-US".
     var localeIdentifier: String = "en-US"
 
@@ -89,6 +93,10 @@ struct SettingsData: Codable, Equatable, Sendable {
 
     /// Ignore presses shorter than this; they are almost always accidental.
     var minimumDictationMilliseconds: Int = 200
+
+    /// How long to keep the microphone open after the key is released, waiting
+    /// for the final audio buffer. 0 disables it.
+    var tailGraceMilliseconds: Int = 150
 
     /// How long to wait after pasting before restoring the previous clipboard.
     var pasteRestoreDelayMilliseconds: Int = 250
@@ -130,12 +138,14 @@ final class AppSettings {
     var spacingMode: SpacingMode
     var customVocabulary: String
     var historyLimit: Int
+    var inputDeviceUID: String
     var localeIdentifier: String
     var stripFillers: Bool
     var polishWithAppleIntelligence: Bool
     var polishTimeoutMilliseconds: Int
     var maxDictationSeconds: Int
     var minimumDictationMilliseconds: Int
+    var tailGraceMilliseconds: Int
     var pasteRestoreDelayMilliseconds: Int
     var requireEditableField: Bool
     var showHUD: Bool
@@ -161,12 +171,14 @@ final class AppSettings {
         spacingMode = loaded.spacingMode
         customVocabulary = loaded.customVocabulary
         historyLimit = loaded.historyLimit
+        inputDeviceUID = loaded.inputDeviceUID
         localeIdentifier = loaded.localeIdentifier
         stripFillers = loaded.stripFillers
         polishWithAppleIntelligence = loaded.polishWithAppleIntelligence
         polishTimeoutMilliseconds = loaded.polishTimeoutMilliseconds
         maxDictationSeconds = loaded.maxDictationSeconds
         minimumDictationMilliseconds = loaded.minimumDictationMilliseconds
+        tailGraceMilliseconds = loaded.tailGraceMilliseconds
         pasteRestoreDelayMilliseconds = loaded.pasteRestoreDelayMilliseconds
         requireEditableField = loaded.requireEditableField
         showHUD = loaded.showHUD
@@ -185,12 +197,14 @@ final class AppSettings {
             spacingMode: spacingMode,
             customVocabulary: customVocabulary,
             historyLimit: historyLimit,
+            inputDeviceUID: inputDeviceUID,
             localeIdentifier: localeIdentifier,
             stripFillers: stripFillers,
             polishWithAppleIntelligence: polishWithAppleIntelligence,
             polishTimeoutMilliseconds: polishTimeoutMilliseconds,
             maxDictationSeconds: maxDictationSeconds,
             minimumDictationMilliseconds: minimumDictationMilliseconds,
+            tailGraceMilliseconds: tailGraceMilliseconds,
             pasteRestoreDelayMilliseconds: pasteRestoreDelayMilliseconds,
             requireEditableField: requireEditableField,
             showHUD: showHUD,
