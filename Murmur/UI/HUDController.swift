@@ -15,7 +15,8 @@ private final class HUDPanel: NSPanel {
 @MainActor
 final class HUDController {
 
-    private static let size = NSSize(width: 340, height: 52)
+    /// Owned by `HUDView`, which knows how much room its shadow needs.
+    private static var size: NSSize { HUDView.windowSize }
 
     private var panel: HUDPanel?
     private weak var controller: DictationController?

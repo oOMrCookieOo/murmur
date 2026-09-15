@@ -9,17 +9,35 @@ import SwiftUI
 struct HUDView: View {
     @Bindable var controller: DictationController
 
+    /// The capsule's own size.
+    static let capsuleSize = CGSize(width: 340, height: 52)
+
+    /// Breathing room around the capsule inside the window.
+    ///
+    /// The window clips everything it draws, so without this the soft shadow
+    /// would be sliced off square at the window edge — and any content wider
+    /// than the window would push the capsule's rounded right end outside it,
+    /// leaving a flat cut edge.
+    static let margin: CGFloat = 16
+
+    /// What the panel must be sized to.
+    static var windowSize: NSSize {
+        NSSize(width: capsuleSize.width + margin * 2,
+               height: capsuleSize.height + margin * 2)
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             glyph
                 .frame(width: 20, height: 20)
 
             centrepiece
-
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // A hard frame, not maxWidth: .infinity. The capsule must be exactly
+        // this size whatever the content does, or a long transcript stretches
+        // it past the window and its right end gets clipped flat.
+        .frame(width: Self.capsuleSize.width, height: Self.capsuleSize.height)
         .background(
             Capsule(style: .continuous)
                 .fill(.regularMaterial)
@@ -27,8 +45,9 @@ struct HUDView: View {
                     Capsule(style: .continuous)
                         .strokeBorder(.white.opacity(0.14), lineWidth: 0.5)
                 )
-                .shadow(color: .black.opacity(0.28), radius: 14, y: 5)
+                .shadow(color: .black.opacity(0.28), radius: 12, y: 4)
         )
+        .padding(Self.margin)
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: controller.phase)
     }
 
@@ -81,16 +100,26 @@ struct HUDView: View {
                     .font(.system(size: 12, weight: controller.liveText.isEmpty ? .medium : .regular))
                     .foregroundStyle(controller.liveText.isEmpty ? .secondary : .primary)
                     .lineLimit(1)
+                    // Head truncation keeps the most recent words visible, which
+                    // is what you want to read while still speaking.
                     .truncationMode(.head)
+                    .frame(maxWidth: Self.textWidthLimit, alignment: .leading)
             }
+            .fixedSize(horizontal: true, vertical: false)
         } else {
             Text(title)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(isError ? .secondary : .primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .frame(maxWidth: Self.textWidthLimit, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
+
+    /// Caps the text so content can never outgrow the capsule.
+    /// 340 − 2×18 padding − 20 glyph − 12 spacing − 74 waveform − 10 spacing.
+    private static let textWidthLimit: CGFloat = 170
 
     private var isError: Bool {
         if case .finished(.discarded) = controller.phase { return true }
