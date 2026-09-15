@@ -138,6 +138,15 @@ enum TextInjector {
 
     // MARK: - Clipboard
 
+    /// A pasteboard item carrying the text plus the community-standard
+    /// "do not archive me" marker that clipboard managers honour.
+    private static func concealedItem(for text: String) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setString("", forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        return item
+    }
+
     @discardableResult
     private static func writeToClipboardWithoutRestoring(_ text: String) -> Bool {
         let pasteboard = NSPasteboard.general
@@ -163,7 +172,16 @@ enum TextInjector {
         pasteboard.clearContents()
         // `.string` preserves newlines exactly, so multi-line dictation lands
         // as multiple lines rather than one run-on paragraph.
-        guard pasteboard.setString(text, forType: .string) else {
+        //
+        // Also tagged concealed. Here the clipboard is pure plumbing — we put
+        // the text back seconds later — but without the tag every dictation is
+        // archived by clipboard managers and pushed to the user's other devices
+        // by Universal Clipboard. For an app whose whole point is that speech
+        // never leaves the machine, that would be a real leak.
+        //
+        // Only on this path: in clipboard-only mode the clipboard IS the
+        // deliverable, and suppressing history there would be wrong.
+        guard pasteboard.writeObjects([concealedItem(for: text)]) else {
             // The clipboard has already been cleared, so the user's contents are
             // gone unless we put them back right now.
             previous.restore(to: pasteboard, onlyIfUnchangedFrom: pasteboard.changeCount)
