@@ -270,7 +270,7 @@ final class DictationController {
         monitor?.setCapturing(true)
 
         dismissTask?.cancel()
-        if settings.showHUD { hud.show() }
+        if settings.showHUD { hud.show(position: settings.hudPosition) }
         playSound(named: "Tink")
 
         startLevelPolling()
@@ -294,6 +294,7 @@ final class DictationController {
         if let started = recordingStartedAt {
             let elapsed = ContinuousClock.now - started
             if elapsed < .milliseconds(settings.minimumDictationMilliseconds) {
+                Log.app.info("Press too short; ignored")
                 cancel(reason: nil)
                 return
             }
@@ -322,6 +323,7 @@ final class DictationController {
         }
 
         guard !raw.isEmpty else {
+            Log.app.info("Dictation produced no text")
             flash(.discarded(reason: "Nothing was said"))
             await rearm()
             return
@@ -358,6 +360,10 @@ final class DictationController {
         case .pasted:
             flash(.pasted)
         case .leftOnClipboard(let reason):
+            // Logged because this is the outcome worth diagnosing: the words
+            // are safe, but they did not go where the user was looking, and
+            // without a reason in the log there is no way to find out why.
+            Log.output.info("Left on clipboard: \(reason ?? "clipboard-only mode", privacy: .public)")
             flash(.copied(reason: reason))
         case .failed(let reason):
             // Deliberately distinct from `.copied`: the text is NOT on the

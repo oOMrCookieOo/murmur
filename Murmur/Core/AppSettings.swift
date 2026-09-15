@@ -37,6 +37,22 @@ enum SpacingMode: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
+/// Where the floating indicator appears.
+enum HUDPosition: String, CaseIterable, Identifiable, Codable, Sendable {
+    /// Centred near the bottom of the screen the cursor is on.
+    case bottomCentre
+    /// Just below-right of the pointer.
+    case nearCursor
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .bottomCentre: return "Bottom centre"
+        case .nearCursor:   return "Near the pointer"
+        }
+    }
+}
+
 /// What to do with the finished transcript.
 enum DeliveryMode: String, CaseIterable, Identifiable, Codable, Sendable {
     /// Paste into whatever app was frontmost when dictation began.
@@ -119,6 +135,7 @@ struct SettingsData: Codable, Equatable, Sendable {
     var requireEditableField: Bool = true
 
     var showHUD: Bool = true
+    var hudPosition: HUDPosition = .bottomCentre
     var playSounds: Bool = false
     var launchAtLogin: Bool = false
 
@@ -158,6 +175,7 @@ final class AppSettings {
     var pasteRestoreDelayMilliseconds: Int
     var requireEditableField: Bool
     var showHUD: Bool
+    var hudPosition: HUDPosition
     var playSounds: Bool
     var launchAtLogin: Bool
 
@@ -193,6 +211,7 @@ final class AppSettings {
         pasteRestoreDelayMilliseconds = loaded.pasteRestoreDelayMilliseconds
         requireEditableField = loaded.requireEditableField
         showHUD = loaded.showHUD
+        hudPosition = loaded.hudPosition
         playSounds = loaded.playSounds
         launchAtLogin = loaded.launchAtLogin
 
@@ -221,6 +240,7 @@ final class AppSettings {
             pasteRestoreDelayMilliseconds: pasteRestoreDelayMilliseconds,
             requireEditableField: requireEditableField,
             showHUD: showHUD,
+            hudPosition: hudPosition,
             playSounds: playSounds,
             launchAtLogin: launchAtLogin
         )

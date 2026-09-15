@@ -84,6 +84,12 @@ private struct GeneralSettings: View {
             Divider()
 
             Toggle("Show the floating indicator", isOn: $settings.showHUD)
+            Picker("Indicator position", selection: $settings.hudPosition) {
+                ForEach(HUDPosition.allCases) { position in
+                    Text(position.displayName).tag(position)
+                }
+            }
+            .disabled(!settings.showHUD)
             Toggle("Play a sound when recording starts and stops", isOn: $settings.playSounds)
             Toggle("Launch at login", isOn: $settings.launchAtLogin)
                 .onChange(of: settings.launchAtLogin) { _, enabled in

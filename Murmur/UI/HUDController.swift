@@ -15,7 +15,7 @@ private final class HUDPanel: NSPanel {
 @MainActor
 final class HUDController {
 
-    private static let size = NSSize(width: 300, height: 64)
+    private static let size = NSSize(width: 340, height: 52)
 
     private var panel: HUDPanel?
     private weak var controller: DictationController?
@@ -24,13 +24,13 @@ final class HUDController {
         self.controller = controller
     }
 
-    func show() {
+    func show(position: HUDPosition) {
         guard let controller else { return }
 
         let panel = panel ?? makePanel(for: controller)
         self.panel = panel
 
-        panel.setFrameOrigin(Self.origin(near: NSEvent.mouseLocation, size: Self.size))
+        panel.setFrameOrigin(Self.origin(for: position, size: Self.size))
         // `orderFrontRegardless`, never `makeKeyAndOrderFront`: the latter would
         // activate Murmur and pull focus away from the target app.
         panel.orderFrontRegardless()
@@ -49,7 +49,9 @@ final class HUDController {
         )
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // The capsule draws its own shadow; a window shadow would trace the
+        // rectangular frame around it.
+        panel.hasShadow = false
         panel.isFloatingPanel = true
         panel.isMovable = false
         panel.hidesOnDeactivate = false
@@ -68,15 +70,27 @@ final class HUDController {
         return panel
     }
 
-    /// Places the HUD just below-right of the cursor, clamped to the screen the
-    /// cursor is actually on.
-    private static func origin(near point: NSPoint, size: NSSize) -> NSPoint {
-        let screen = NSScreen.screens.first { $0.frame.contains(point) }
-            ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return point }
+    /// Positions the HUD, always on the screen the pointer is currently on so it
+    /// appears where the user is looking in a multi-display setup.
+    private static func origin(for position: HUDPosition, size: NSSize) -> NSPoint {
+        let pointer = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.main
+        guard let visible = screen?.visibleFrame else { return pointer }
 
         let inset: CGFloat = 8
-        var origin = NSPoint(x: point.x + 18, y: point.y - size.height - 18)
+        var origin: NSPoint
+
+        switch position {
+        case .bottomCentre:
+            // Clear of the Dock, and high enough to read at a glance without
+            // covering what is being dictated into.
+            origin = NSPoint(
+                x: visible.midX - size.width / 2,
+                y: visible.minY + 96
+            )
+        case .nearCursor:
+            origin = NSPoint(x: pointer.x + 18, y: pointer.y - size.height - 18)
+        }
 
         origin.x = min(max(origin.x, visible.minX + inset), visible.maxX - size.width - inset)
         origin.y = min(max(origin.y, visible.minY + inset), visible.maxY - size.height - inset)
