@@ -70,12 +70,16 @@ struct HUDView: View {
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.85)
+                .tint(.white)
                 .frame(width: 44)
 
         case .idle, .finished:
             Text(title)
                 .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(.primary)
+                // White, not `.primary`. Over clear glass `.primary` resolves
+                // to black in a light appearance, which reads as a mistake next
+                // to the white bars.
+                .foregroundStyle(.white)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 // Shrinks a little before truncating, so a longer reason stays
