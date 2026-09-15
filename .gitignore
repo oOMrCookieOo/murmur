@@ -1,0 +1,9 @@
+build/
+.build/
+DerivedData/
+*.xcuserdatad
+xcuserdata/
+.DS_Store
+Scripts/*.p12
+Scripts/*.cer
+Scripts/*.key
