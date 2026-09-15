@@ -22,8 +22,6 @@ final class DictationController {
 
     private(set) var phase: DictationPhase = .idle
     private(set) var modelState: ModelState = .unknown
-    /// Live transcript shown in the HUD while speaking.
-    private(set) var liveText: String = ""
     /// Microphone level, 0...1, sampled for the HUD's waveform.
     private(set) var inputLevel: Float = 0
     private(set) var lastError: String?
@@ -218,9 +216,7 @@ final class DictationController {
             inputDeviceUID: snapshot.inputDeviceUID,
             detectSpeechActivity: snapshot.autoStopOnSilence
                 && snapshot.activationMode == .toggle
-        ) { [weak self] text in
-            Task { @MainActor in self?.liveText = text }
-        }
+        )
 
         do {
             try await engine.prewarm()
@@ -283,7 +279,6 @@ final class DictationController {
         if case .finished = phase {
             dismissTask?.cancel()
             phase = .idle
-            liveText = ""
             hud.dismiss()
         }
 
@@ -315,7 +310,6 @@ final class DictationController {
         // appear on screen, so we record where the user actually was.
         target = FocusSnapshot.captureFrontmost()
 
-        liveText = ""
         phase = .listening
         recordingStartedAt = .now
         monitor?.setCapturing(true)
@@ -539,7 +533,6 @@ final class DictationController {
             guard !Task.isCancelled, let self else { return }
             if case .finished = self.phase {
                 self.phase = .idle
-                self.liveText = ""
                 self.hud.dismiss()
             }
         }

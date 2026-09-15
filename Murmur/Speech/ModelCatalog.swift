@@ -47,7 +47,7 @@ enum ModelCatalog {
         SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
-            reportingOptions: [.volatileResults, .fastResults],
+            reportingOptions: [.fastResults],
             attributeOptions: [.audioTimeRange]
         )
     }

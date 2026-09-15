@@ -34,10 +34,11 @@ struct HUDView: View {
             centrepiece
         }
         .padding(.horizontal, 18)
-        // A hard frame, not maxWidth: .infinity. The capsule must be exactly
-        // this size whatever the content does, or a long transcript stretches
-        // it past the window and its right end gets clipped flat.
-        .frame(width: Self.capsuleSize.width, height: Self.capsuleSize.height)
+        // Hugs its content rather than filling a fixed width, so recording is a
+        // small pill and the wordier outcome states grow to fit. The window
+        // behind it is transparent and fixed, so nothing can be clipped.
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(height: Self.capsuleSize.height)
         .background(
             Capsule(style: .continuous)
                 .fill(.regularMaterial)
@@ -92,20 +93,11 @@ struct HUDView: View {
     @ViewBuilder
     private var centrepiece: some View {
         if controller.phase.isRecording {
-            HStack(spacing: 10) {
-                Waveform(level: controller.inputLevel)
-                    .frame(width: 74, height: 18)
-
-                Text(controller.liveText.isEmpty ? "Listening" : controller.liveText)
-                    .font(.system(size: 12, weight: controller.liveText.isEmpty ? .medium : .regular))
-                    .foregroundStyle(controller.liveText.isEmpty ? .secondary : .primary)
-                    .lineLimit(1)
-                    // Head truncation keeps the most recent words visible, which
-                    // is what you want to read while still speaking.
-                    .truncationMode(.head)
-                    .frame(maxWidth: Self.textWidthLimit, alignment: .leading)
-            }
-            .fixedSize(horizontal: true, vertical: false)
+            // Just the meter. Showing the transcript as it formed meant reading
+            // your own words back while still speaking, which is distracting
+            // and, since volatile results keep revising themselves, misleading.
+            Waveform(level: controller.inputLevel)
+                .frame(width: 84, height: 18)
         } else {
             Text(title)
                 .font(.system(size: 12, weight: .medium))
@@ -117,12 +109,7 @@ struct HUDView: View {
         }
     }
 
-    /// Caps the text so content can never outgrow the capsule.
-    ///
-    /// While recording the budget is 340 − 36 padding − 20 glyph − 12 − 74
-    /// waveform − 10 = 188 pt, kept at 170 for a little slack. The idle branch
-    /// has no waveform and so can afford more.
-    private static let textWidthLimit: CGFloat = 170
+    /// Caps outcome text so the capsule cannot outgrow its window.
     private static let idleTextWidthLimit: CGFloat = 250
 
     private var isError: Bool {

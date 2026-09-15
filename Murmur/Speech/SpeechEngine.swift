@@ -131,7 +131,6 @@ actor SpeechEngine {
     /// actor against a wedged coreaudiod.
     private var inputDevice: AudioInputDevice?
     private var detectSpeechActivity = false
-    private var volatileTextHandler: (@Sendable (String) -> Void)?
 
     /// In-flight prewarm, so concurrent callers join it instead of each building
     /// a session and silently orphaning the loser's analyzer and results task.
@@ -163,10 +162,8 @@ actor SpeechEngine {
         locale: Locale,
         vocabulary: [String],
         inputDeviceUID: String,
-        detectSpeechActivity: Bool,
-        onVolatileText: @escaping @Sendable (String) -> Void
+        detectSpeechActivity: Bool
     ) async {
-        self.volatileTextHandler = onVolatileText
         // Not part of the prepared session: the device is selected on the audio
         // unit at capture time, so changing it needs no rebuild.
         if self.inputDeviceUID != inputDeviceUID || (inputDevice == nil && !inputDeviceUID.isEmpty) {
@@ -246,10 +243,11 @@ actor SpeechEngine {
         let transcriber = SpeechTranscriber(
             locale: resolved,
             transcriptionOptions: [],
-            // `.volatileResults` drives the live HUD preview. `.fastResults`
-            // trades a little accuracy for earlier finalisation, which is
-            // exactly the trade dictation wants.
-            reportingOptions: [.volatileResults, .fastResults],
+            // `.fastResults` trades a little accuracy for earlier finalisation,
+            // which is exactly the trade dictation wants. `.volatileResults` is
+            // deliberately absent: nothing displays a live transcript any more,
+            // and asking for revisions we throw away is work for nothing.
+            reportingOptions: [.fastResults],
             attributeOptions: [.audioTimeRange]
         )
 
@@ -313,23 +311,14 @@ actor SpeechEngine {
         for transcriber: SpeechTranscriber,
         transcript: TranscriptBox
     ) -> Task<String, Error> {
-        let onVolatile = volatileTextHandler
         return Task<String, Error>.detached(priority: .userInitiated) {
             var finalized = AttributedString()
 
-            for try await result in transcriber.results {
-                if result.isFinal {
-                    finalized.append(result.text)
-                    let text = String(finalized.characters)
-                    transcript.set(text)
-                    onVolatile?(text)
-                } else {
-                    // Volatile results replace rather than append: they cover
-                    // only the range after the finalised text.
-                    var preview = finalized
-                    preview.append(result.text)
-                    onVolatile?(String(preview.characters))
-                }
+            for try await result in transcriber.results where result.isFinal {
+                finalized.append(result.text)
+                // Published as it settles so a finalisation timeout can still
+                // salvage what was recognised.
+                transcript.set(String(finalized.characters))
             }
             return String(finalized.characters)
         }
