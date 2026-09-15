@@ -209,6 +209,20 @@ private struct VocabularySettings: View {
             }
 
             Section {
+                Toggle("Also learn my installed app names",
+                       isOn: $settings.includeAppNamesInVocabulary)
+                LabeledContent("Apps found") {
+                    Text("\(controller.appNames.count)")
+                        .foregroundStyle(.secondary)
+                }
+                Text("Product names are exactly what a general speech model "
+                   + "gets wrong — Ghostty, OrbStack, TablePlus. Supplying them "
+                   + "costs nothing and fixes them in ordinary dictation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Text("This biases recognition toward your words without "
                    + "retraining anything, and stays entirely on-device. "
                    + "Changing it rebuilds the speech session, which takes a "

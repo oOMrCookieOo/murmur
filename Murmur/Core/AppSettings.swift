@@ -87,6 +87,12 @@ struct SettingsData: Codable, Equatable, Sendable {
     /// think about a word list.
     var customVocabulary: String = ""
 
+    /// Also teach the recogniser the names of installed applications.
+    ///
+    /// On by default: product names are exactly what a general speech model
+    /// gets wrong, and the list costs nothing to supply.
+    var includeAppNamesInVocabulary: Bool = true
+
     /// How many past transcripts to keep for recovery. In memory only.
     var historyLimit: Int = 20
 
@@ -160,6 +166,7 @@ struct SettingsData: Codable, Equatable, Sendable {
         deliveryMode = try container.decodeIfPresent(DeliveryMode.self, forKey: .deliveryMode) ?? defaults.deliveryMode
         spacingMode = try container.decodeIfPresent(SpacingMode.self, forKey: .spacingMode) ?? defaults.spacingMode
         customVocabulary = try container.decodeIfPresent(String.self, forKey: .customVocabulary) ?? defaults.customVocabulary
+        includeAppNamesInVocabulary = try container.decodeIfPresent(Bool.self, forKey: .includeAppNamesInVocabulary) ?? defaults.includeAppNamesInVocabulary
         historyLimit = try container.decodeIfPresent(Int.self, forKey: .historyLimit) ?? defaults.historyLimit
         inputDeviceUID = try container.decodeIfPresent(String.self, forKey: .inputDeviceUID) ?? defaults.inputDeviceUID
         localeIdentifier = try container.decodeIfPresent(String.self, forKey: .localeIdentifier) ?? defaults.localeIdentifier
@@ -203,6 +210,7 @@ final class AppSettings {
     var deliveryMode: DeliveryMode
     var spacingMode: SpacingMode
     var customVocabulary: String
+    var includeAppNamesInVocabulary: Bool
     var historyLimit: Int
     var inputDeviceUID: String
     var localeIdentifier: String
@@ -239,6 +247,7 @@ final class AppSettings {
         deliveryMode = loaded.deliveryMode
         spacingMode = loaded.spacingMode
         customVocabulary = loaded.customVocabulary
+        includeAppNamesInVocabulary = loaded.includeAppNamesInVocabulary
         historyLimit = loaded.historyLimit
         inputDeviceUID = loaded.inputDeviceUID
         localeIdentifier = loaded.localeIdentifier
@@ -273,6 +282,7 @@ final class AppSettings {
         data.deliveryMode = deliveryMode
         data.spacingMode = spacingMode
         data.customVocabulary = customVocabulary
+        data.includeAppNamesInVocabulary = includeAppNamesInVocabulary
         data.historyLimit = historyLimit
         data.inputDeviceUID = inputDeviceUID
         data.localeIdentifier = localeIdentifier

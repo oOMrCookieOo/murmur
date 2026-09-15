@@ -66,3 +66,4 @@ test:
 		Murmur/Core/TranscriptHistory.swift \
 		Murmur/Core/Log.swift
 	@./build/tests/history-tests
+

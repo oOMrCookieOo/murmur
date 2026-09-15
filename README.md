@@ -103,6 +103,11 @@ Your words are never silently dropped.
 **Settings → Vocabulary.** One word or phrase per line: names, jargon, project
 nouns — anything the transcriber keeps getting wrong.
 
+Murmur also learns the names of your installed applications automatically —
+product names like Ghostty, OrbStack and TablePlus are exactly what a general
+speech model gets wrong, and supplying them costs nothing. Turn it off in the
+same pane.
+
 This uses `AnalysisContext.contextualStrings` to bias recognition toward your
 words, entirely on-device. The model is fixed, but what it expects to hear is
 not, so this is the largest accuracy lever available short of a different model.
@@ -268,6 +273,7 @@ Murmur/
                 ModelCatalog           AssetInventory download / reserve
                 LevelMeter             render-thread-safe input level
                 SpeechActivity         silence tracking, for auto-stop
+                AppIndex               installed app names, as vocabulary
                 AudioDevices           CoreAudio microphone enumeration
   Input/        HotkeyMonitor          CGEventTap on a dedicated thread
                 TriggerKey             modifier keys + device-dependent masks
@@ -281,7 +287,7 @@ Murmur/
   UI/           MenuBarPanel, SettingsView, HUDController, HUDView
 Config/         Info.plist, Murmur.entitlements
 Scripts/        build-app.sh, make-signing-cert.sh
-Tests/          CleanupTests.swift — run with `make test`
+Tests/          Cleanup, Settings, History — run with `make test`
 ```
 
 ### The paste pipeline

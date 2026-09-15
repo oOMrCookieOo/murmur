@@ -38,6 +38,8 @@ final class DictationController {
     private(set) var supportedLocales: [Locale] = []
     /// Microphones currently attached, for the Settings picker.
     private(set) var inputDevices: [AudioInputDevice] = []
+    /// Installed application names, fed to the recogniser as vocabulary.
+    private(set) var appNames: [String] = []
 
     let settings: AppSettings
     let permissions: PermissionsModel
@@ -83,11 +85,26 @@ final class DictationController {
         hud.attach(controller: self)
 
         inputDevices = AudioDevices.inputs()
+        appNames = AppIndex.installedNames()
 
         Task {
             supportedLocales = await ModelCatalog.supportedLocales()
             await refreshModelAndPrewarm()
         }
+    }
+
+    /// The user's own terms, plus installed app names when enabled.
+    ///
+    /// App names go last so a term the user typed themselves wins if both
+    /// somehow matter, and duplicates are removed because the same name can
+    /// appear in both lists.
+    private func vocabulary(for snapshot: SettingsData) -> [String] {
+        var terms = snapshot.vocabularyTerms
+        if snapshot.includeAppNamesInVocabulary {
+            let existing = Set(terms.map { $0.lowercased() })
+            terms += appNames.filter { !existing.contains($0.lowercased()) }
+        }
+        return terms
     }
 
     /// Re-reads attached microphones. Cheap, and devices come and go.
@@ -150,6 +167,7 @@ final class DictationController {
             _ = settings.triggerKey
             _ = settings.localeIdentifier
             _ = settings.customVocabulary
+            _ = settings.includeAppNamesInVocabulary
             _ = settings.inputDeviceUID
             _ = settings.autoStopOnSilence
             _ = settings.activationMode
@@ -196,7 +214,7 @@ final class DictationController {
 
         await engine.configure(
             locale: locale,
-            vocabulary: snapshot.vocabularyTerms,
+            vocabulary: vocabulary(for: snapshot),
             inputDeviceUID: snapshot.inputDeviceUID,
             detectSpeechActivity: snapshot.autoStopOnSilence
                 && snapshot.activationMode == .toggle
