@@ -51,7 +51,85 @@ enum TextInjector {
                 : .failed(reason: "Could not write to the clipboard")
         }
 
-        return await paste(text, to: target, settings: settings)
+        let separator = leadingSeparator(for: target, settings: settings)
+        return await paste(separator + text, to: target, settings: settings)
+    }
+
+    // MARK: - Spacing
+
+    /// When the last paste happened, and where, so consecutive dictations can be
+    /// separated even in apps whose text position we cannot read.
+    private static var lastPasteTarget: (pid: pid_t, at: ContinuousClock.Instant)?
+
+    private static func leadingSeparator(for target: FocusSnapshot?, settings: SettingsData) -> String {
+        switch settings.spacingMode {
+        case .never:
+            return ""
+        case .always:
+            return " "
+        case .smart:
+            guard let target else { return "" }
+            // Ask the app directly where the caret is. This is the only way to
+            // get it right in the general case — the user may have clicked
+            // somewhere else entirely between dictations.
+            if let needsSpace = caretFollowsNonWhitespace(pid: target.processIdentifier) {
+                return needsSpace ? " " : ""
+            }
+            // Terminals and many Electron views do not expose a caret offset.
+            // Fall back to the case this actually matters for: dictating
+            // repeatedly into the same app without pausing.
+            if let last = lastPasteTarget,
+               last.pid == target.processIdentifier,
+               ContinuousClock.now - last.at < .seconds(30) {
+                return " "
+            }
+            return ""
+        }
+    }
+
+    /// Whether the character immediately before the caret is a non-space.
+    ///
+    /// Returns nil when the app does not expose enough Accessibility detail to
+    /// tell, which is common in terminals and web views.
+    private static func caretFollowsNonWhitespace(pid: pid_t) -> Bool? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success,
+              let focusedValue,
+              CFGetTypeID(focusedValue) == AXUIElementGetTypeID()
+        else { return nil }
+        let element = unsafeDowncast(focusedValue as AnyObject, to: AXUIElement.self)
+
+        var rangeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,
+              let rangeValue,
+              CFGetTypeID(rangeValue) == AXValueGetTypeID()
+        else { return nil }
+
+        var caret = CFRange()
+        guard AXValueGetValue(unsafeDowncast(rangeValue as AnyObject, to: AXValue.self), .cfRange, &caret) else {
+            return nil
+        }
+        // Start of the field: nothing to separate from.
+        guard caret.location > 0 else { return false }
+
+        var previousCharacter = CFRange(location: caret.location - 1, length: 1)
+        guard let parameter = AXValueCreate(.cfRange, &previousCharacter) else { return nil }
+
+        var text: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+                  element,
+                  kAXStringForRangeParameterizedAttribute as CFString,
+                  parameter,
+                  &text
+              ) == .success,
+              let string = text as? String,
+              let character = string.first
+        else { return nil }
+
+        return !character.isWhitespace && !character.isNewline
     }
 
     // MARK: - Safety
@@ -216,6 +294,7 @@ enum TextInjector {
         try? await Task.sleep(for: .milliseconds(settings.pasteRestoreDelayMilliseconds))
         previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
 
+        if let target { lastPasteTarget = (target.processIdentifier, .now) }
         return .pasted
     }
 

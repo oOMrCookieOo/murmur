@@ -56,6 +56,17 @@ private struct GeneralSettings: View {
                 }
             }
 
+            Picker("Insert a space before", selection: $settings.spacingMode) {
+                ForEach(SpacingMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            Text("Stops back-to-back dictations running together. "
+               + "\"Only when needed\" asks the app where the cursor is and "
+               + "adds a space only if something is already there.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Divider()
 
             Toggle("Show the floating indicator", isOn: $settings.showHUD)

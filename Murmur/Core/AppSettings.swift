@@ -17,6 +17,26 @@ enum ActivationMode: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
+/// Whether to separate this dictation from whatever is already at the cursor.
+enum SpacingMode: String, CaseIterable, Identifiable, Codable, Sendable {
+    /// Paste exactly what was transcribed.
+    case never
+    /// Insert a leading space only when the cursor is not already after
+    /// whitespace or at the start of a field.
+    case smart
+    /// Always insert a leading space.
+    case always
+
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .never:  return "Never"
+        case .smart:  return "Only when needed"
+        case .always: return "Always"
+        }
+    }
+}
+
 /// What to do with the finished transcript.
 enum DeliveryMode: String, CaseIterable, Identifiable, Codable, Sendable {
     /// Paste into whatever app was frontmost when dictation began.
@@ -41,6 +61,10 @@ struct SettingsData: Codable, Equatable, Sendable {
     var triggerKey: TriggerKey = .rightOption
     var activationMode: ActivationMode = .pushToTalk
     var deliveryMode: DeliveryMode = .pasteAtCursor
+
+    /// Separator before the pasted text. Without this, dictating twice in a row
+    /// produces "...one two three.This is the next one."
+    var spacingMode: SpacingMode = .smart
 
     /// BCP-47 identifier, e.g. "en-US".
     var localeIdentifier: String = "en-US"
@@ -87,6 +111,7 @@ final class AppSettings {
     var triggerKey: TriggerKey
     var activationMode: ActivationMode
     var deliveryMode: DeliveryMode
+    var spacingMode: SpacingMode
     var localeIdentifier: String
     var stripFillers: Bool
     var polishWithAppleIntelligence: Bool
@@ -115,6 +140,7 @@ final class AppSettings {
         triggerKey = loaded.triggerKey
         activationMode = loaded.activationMode
         deliveryMode = loaded.deliveryMode
+        spacingMode = loaded.spacingMode
         localeIdentifier = loaded.localeIdentifier
         stripFillers = loaded.stripFillers
         polishWithAppleIntelligence = loaded.polishWithAppleIntelligence
@@ -136,6 +162,7 @@ final class AppSettings {
             triggerKey: triggerKey,
             activationMode: activationMode,
             deliveryMode: deliveryMode,
+            spacingMode: spacingMode,
             localeIdentifier: localeIdentifier,
             stripFillers: stripFillers,
             polishWithAppleIntelligence: polishWithAppleIntelligence,
