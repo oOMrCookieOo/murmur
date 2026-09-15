@@ -75,6 +75,9 @@ final class HUDController {
 
         let hosting = NSHostingView(rootView: HUDView(controller: controller))
         hosting.frame = NSRect(origin: .zero, size: Self.size)
+        // Liquid Glass samples what is behind the window, so the hosting view
+        // must not paint an opaque background of its own.
+        hosting.layer?.backgroundColor = .clear
         panel.contentView = hosting
         return panel
     }

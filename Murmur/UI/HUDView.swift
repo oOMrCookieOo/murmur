@@ -1,174 +1,174 @@
 import SwiftUI
 
-/// The floating dictation pill.
+/// The floating dictation indicator.
 ///
-/// Laid out as a fixed-width capsule with everything centred, so the indicator
-/// keeps the same silhouette from "Listening" through to "Pasted" instead of
-/// jumping around as its contents change. Text is the only thing that varies,
-/// and it is length-limited so it cannot reflow the shape.
+/// Liquid Glass, and while recording it is nothing but the level meter — no
+/// glyph, no label, no transcript. The bars alone say "listening"; anything
+/// else is furniture.
 struct HUDView: View {
     @Bindable var controller: DictationController
 
-    /// The capsule's own size.
-    static let capsuleSize = CGSize(width: 340, height: 52)
+    static let capsuleHeight: CGFloat = 48
+
+    /// One width for every state.
+    ///
+    /// The capsule used to hug its content, so finishing a dictation shrank it
+    /// from the meter's width down to the width of the word "Pasted" — a visible
+    /// snap at exactly the moment you are looking at it. Holding the width
+    /// constant makes the state change a cross-fade instead.
+    static let capsuleWidth: CGFloat = 210
 
     /// Breathing room around the capsule inside the window.
     ///
-    /// The window clips everything it draws, so without this the soft shadow
-    /// would be sliced off square at the window edge — and any content wider
-    /// than the window would push the capsule's rounded right end outside it,
-    /// leaving a flat cut edge.
-    static let margin: CGFloat = 16
+    /// The window clips what it draws, and Liquid Glass renders a soft edge
+    /// beyond the shape's bounds, so without this the glass would be sliced off
+    /// square at the window edge.
+    static let margin: CGFloat = 20
 
-    /// What the panel must be sized to.
+    /// Sized for the widest state, which is an outcome message rather than the
+    /// meter. The capsule itself hugs its content, so it is smaller than this.
     static var windowSize: NSSize {
-        NSSize(width: capsuleSize.width + margin * 2,
-               height: capsuleSize.height + margin * 2)
+        NSSize(width: capsuleWidth + margin * 2, height: capsuleHeight + margin * 2)
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            glyph
-                .frame(width: 20, height: 20)
-
-            centrepiece
-        }
-        .padding(.horizontal, 18)
-        // Hugs its content rather than filling a fixed width, so recording is a
-        // small pill and the wordier outcome states grow to fit. The window
-        // behind it is transparent and fixed, so nothing can be clipped.
-        .fixedSize(horizontal: true, vertical: false)
-        .frame(height: Self.capsuleSize.height)
-        .background(
-            Capsule(style: .continuous)
-                .fill(.regularMaterial)
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(.white.opacity(0.14), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(0.28), radius: 12, y: 4)
-        )
-        .padding(Self.margin)
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: controller.phase)
+        content
+            .padding(.horizontal, 20)
+            .frame(height: Self.capsuleHeight)
+            .fixedSize(horizontal: true, vertical: false)
+            // `.clear`, not `.regular`: the reference look is barely there,
+            // with the desktop clearly visible through it. A rounded rectangle
+            // rather than a capsule — the radius is noticeably less than half
+            // the height.
+            .glassEffect(.clear, in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+            // A hairline rim, as in the reference. It also means the shape
+            // stays legible against a background that happens to match the
+            // glass, which `.clear` alone cannot guarantee.
+            .overlay(
+                RoundedRectangle(cornerRadius: 19, style: .continuous)
+                    .strokeBorder(.white.opacity(0.22), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.22), radius: 10, y: 3)
+            // Centres the capsule in the window. NSHostingView lays a root view
+            // narrower than its frame out at the leading edge, which put the
+            // pill left of centre on screen even though the window itself was
+            // centred.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.18), value: controller.phase)
     }
 
-    // MARK: - Leading glyph
-
     @ViewBuilder
-    private var glyph: some View {
+    private var content: some View {
         switch controller.phase {
         case .listening:
-            ZStack {
-                Circle()
-                    .fill(.red.opacity(0.18))
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.red)
-            }
+            Waveform(level: controller.inputLevel)
+                .frame(width: Waveform.width, height: 24)
+                .transition(.opacity)
+
         case .finalizing, .polishing, .delivering:
+            // The meter would be lying here — the microphone is already closed.
             ProgressView()
                 .controlSize(.small)
-                .scaleEffect(0.8)
-        case .finished(.pasted(let confirmed)):
-            Image(systemName: confirmed ? "checkmark.circle.fill" : "checkmark.circle")
-                .font(.system(size: 17))
-                .foregroundStyle(confirmed ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
-        case .finished(.copied):
-            Image(systemName: "doc.on.clipboard.fill")
-                .font(.system(size: 15))
-                .foregroundStyle(.blue)
-        case .finished(.discarded):
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 17))
-                .foregroundStyle(.secondary)
-        case .idle:
-            Image(systemName: "mic")
-                .font(.system(size: 15))
-                .foregroundStyle(.secondary)
-        }
-    }
+                .scaleEffect(0.85)
+                .frame(width: 44)
 
-    // MARK: - Centre
-
-    @ViewBuilder
-    private var centrepiece: some View {
-        if controller.phase.isRecording {
-            // Just the meter. Showing the transcript as it formed meant reading
-            // your own words back while still speaking, which is distracting
-            // and, since volatile results keep revising themselves, misleading.
-            Waveform(level: controller.inputLevel)
-                .frame(width: 84, height: 18)
-        } else {
+        case .idle, .finished:
             Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isError ? .secondary : .primary)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: Self.idleTextWidthLimit, alignment: .leading)
-                .fixedSize(horizontal: true, vertical: false)
+                // Shrinks a little before truncating, so a longer reason stays
+                // readable inside the fixed width.
+                .minimumScaleFactor(0.8)
+                .transition(.opacity)
         }
     }
 
-    /// Caps outcome text so the capsule cannot outgrow its window.
-    private static let idleTextWidthLimit: CGFloat = 250
-
-    private var isError: Bool {
-        if case .finished(.discarded) = controller.phase { return true }
-        return false
+    /// Compact phrasings of the delivery reasons, for the fixed-width pill.
+    /// The full wording stays in the log.
+    private static func shortened(_ reason: String) -> String {
+        switch reason {
+        case "No editable field is focused": return "No text field"
+        case "Focus moved to another app":   return "Focus moved"
+        case "A password field is active":   return "Password field"
+        case "Accessibility access not granted": return "Needs Accessibility"
+        default: return "Copied — \(reason)"
+        }
     }
 
     private var title: String {
         switch controller.phase {
-        case .idle:                    return "Ready"
-        case .listening:               return "Listening"
-        case .finalizing:              return "Transcribing"
-        case .polishing:               return "Cleaning up"
-        case .delivering:              return "Pasting"
         case .finished(.pasted(true)):  return "Pasted"
-        // Hollow tick and a qualifier: the keystroke went out but nothing was
-        // seen taking it, so claiming success outright would be a guess.
+        // The keystroke went out but nothing was seen taking it, so claiming
+        // success outright would be a guess.
         case .finished(.pasted(false)): return "Pasted — unverified"
-        case .finished(.copied(nil)):  return "Copied to clipboard"
-        case .finished(.copied(let reason?)):
-            return "Clipboard — \(reason)"
-        case .finished(.discarded(let reason)):
-            return reason
+        case .finished(.copied(nil)):   return "Copied"
+        case .finished(.copied(let reason?)): return Self.shortened(reason)
+        case .finished(.discarded(let reason)): return reason
+        default: return "Ready"
         }
     }
 }
 
-/// Symmetric level meter.
+/// Audio-trace level meter.
 ///
-/// Bars are weighted outward from the centre so the shape reads as a voice
-/// rather than a bar chart, and each is springed independently so the motion
-/// stays fluid instead of stepping at the 30 Hz sample rate.
-private struct Waveform: View {
+/// Many thin bars with irregular heights, which is what reads as a waveform.
+/// An earlier version used few bars on a smooth cosine envelope and looked like
+/// a bar chart being stretched — the irregularity is the whole effect.
+///
+/// Heights come from layered sines at unrelated frequencies rather than real
+/// FFT bins: the microphone gives us one amplitude per buffer, so any per-bar
+/// detail is decorative either way, and this costs nothing.
+struct Waveform: View {
     let level: Float
 
-    private static let weights: [Float] = [0.30, 0.52, 0.76, 0.94, 1.0, 0.94, 0.76, 0.52, 0.30]
+    private static let barCount = 29
+    private static let barWidth: CGFloat = 2
+    private static let spacing: CGFloat = 2.5
 
-    var body: some View {
-        HStack(alignment: .center, spacing: 3) {
-            ForEach(Array(Self.weights.enumerated()), id: \.offset) { index, weight in
-                Capsule(style: .continuous)
-                    .fill(.red.gradient)
-                    .frame(width: 3, height: height(for: weight))
-                    .animation(
-                        .spring(response: 0.22, dampingFraction: 0.6)
-                            .delay(Double(index) * 0.008),
-                        value: level
-                    )
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    static var width: CGFloat {
+        CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * spacing
     }
 
-    private func height(for weight: Float) -> CGFloat {
-        let floor: Float = 3
-        let ceiling: Float = 18
-        // Slight boost so ordinary speech reaches most of the range rather than
-        // hovering near the bottom.
-        let scaled = min(level * weight * 1.7, 1)
-        return CGFloat(floor + (ceiling - floor) * scaled)
+    var body: some View {
+        // 30 fps, and only ever on screen while recording.
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let phase = timeline.date.timeIntervalSinceReferenceDate
+
+            HStack(alignment: .center, spacing: Self.spacing) {
+                ForEach(0..<Self.barCount, id: \.self) { index in
+                    Capsule(style: .continuous)
+                        .fill(.white.opacity(0.92))
+                        .frame(width: Self.barWidth, height: height(index: index, phase: phase))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func height(index: Int, phase: TimeInterval) -> CGFloat {
+        let minimum: CGFloat = 3
+        let maximum: CGFloat = 24
+
+        let i = Double(index)
+
+        // Three unrelated frequencies so no repeating pattern is visible, and
+        // the bars travel rather than pulsing in unison.
+        let a = sin(i * 2.31 + phase * 6.1)
+        let b = sin(i * 0.77 - phase * 3.9)
+        let c = sin(i * 5.93 + phase * 9.3)
+        let noise = (a + b * 0.65 + c * 0.45) / 2.1      // roughly -1...1
+        let shaped = (noise + 1) / 2                      // 0...1
+
+        // A gentle taper only — the reference is close to flat across the pill,
+        // unlike a cosine envelope that pinches hard at the ends.
+        let centre = Double(Self.barCount - 1) / 2
+        let edge = 1 - pow(abs(i - centre) / centre, 3) * 0.35
+
+        let amplitude = Double(min(level * 1.9, 1))
+        let value = shaped * edge * (0.10 + 0.90 * amplitude)
+
+        return minimum + (maximum - minimum) * CGFloat(min(max(value, 0), 1))
     }
 }
