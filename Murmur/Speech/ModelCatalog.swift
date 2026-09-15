@@ -1,5 +1,6 @@
 import Foundation
 import Speech
+import os
 
 /// Installation state of the on-device speech model for a given locale.
 enum ModelState: Equatable, Sendable {
@@ -40,12 +41,32 @@ enum ModelCatalog {
         return await SpeechTranscriber.supportedLocale(equivalentTo: locale)
     }
 
+    /// Mirrors exactly the configuration `SpeechEngine` builds, so status and
+    /// installation are asked about the module that will actually run.
+    private static func probe(for locale: Locale) -> SpeechTranscriber {
+        SpeechTranscriber(
+            locale: locale,
+            transcriptionOptions: [],
+            reportingOptions: [.volatileResults, .fastResults],
+            attributeOptions: [.audioTimeRange]
+        )
+    }
+
     static func state(for locale: Locale) async -> ModelState {
         guard SpeechTranscriber.isAvailable else { return .unsupported }
         guard let resolved = await resolve(locale) else { return .unsupported }
 
-        let probe = SpeechTranscriber(locale: resolved, preset: .progressiveTranscription)
-        switch await AssetInventory.status(forModules: [probe]) {
+        // `installedLocales` is checked first: on a client's very first call,
+        // `AssetInventory.status` reports `.supported` for an already-installed
+        // locale and only flips to `.installed` after an installation request
+        // has been made once. Trusting it alone shows a spurious "Downloading…"
+        // on first launch, during which dictation refuses to start.
+        let installed = await SpeechTranscriber.installedLocales
+        if installed.contains(where: { $0.identifier(.bcp47) == resolved.identifier(.bcp47) }) {
+            return .installed
+        }
+
+        switch await AssetInventory.status(forModules: [probe(for: resolved)]) {
         case .unsupported:  return .unsupported
         case .supported:    return .notInstalled
         case .downloading:  return .downloading(0)
@@ -67,9 +88,7 @@ enum ModelCatalog {
             throw ModelCatalogError.unsupportedLocale(locale.identifier(.bcp47))
         }
 
-        let probe = SpeechTranscriber(locale: resolved, preset: .progressiveTranscription)
-
-        if let request = try await AssetInventory.assetInstallationRequest(supporting: [probe]) {
+        if let request = try await AssetInventory.assetInstallationRequest(supporting: [probe(for: resolved)]) {
             let progress = request.progress
 
             // Poll rather than KVO: Progress KVO delivers on arbitrary queues
@@ -87,14 +106,37 @@ enum ModelCatalog {
             onProgress(1.0)
         }
 
-        // Best effort: reservation slots are limited and failing to get one is
-        // not fatal, it just means the model may be evicted later.
+        await reserve(resolved)
+    }
+
+    /// Reserves `locale`, releasing whatever we reserved previously.
+    ///
+    /// `AssetInventory.maximumReservedLocales` is 5. Without releasing, changing
+    /// language six times exhausts every slot, `reserve` starts failing, and the
+    /// *active* model becomes evictable again — precisely the surprise
+    /// multi-hundred-megabyte download reserving was meant to prevent.
+    private static func reserve(_ locale: Locale) async {
+        let previous = reservedLocale.withLock { held -> Locale? in
+            let old = held
+            held = locale
+            return old
+        }
+
+        if let previous, previous != locale {
+            _ = await AssetInventory.release(reservedLocale: previous)
+        }
+
         do {
-            _ = try await AssetInventory.reserve(locale: resolved)
+            _ = try await AssetInventory.reserve(locale: locale)
         } catch {
+            // Not fatal: it only means the model may be evicted later.
             Log.speech.warning("Could not reserve locale: \(error.localizedDescription)")
+            reservedLocale.withLock { $0 = nil }
         }
     }
+
+    /// The one locale we currently hold a reservation for.
+    private static let reservedLocale = OSAllocatedUnfairLock<Locale?>(initialState: nil)
 }
 
 enum ModelCatalogError: LocalizedError {

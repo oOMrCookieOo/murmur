@@ -57,6 +57,15 @@ final class DictationController {
 
     func start() {
         permissions.refresh()
+
+        // Logged individually because "the tap failed" does not say which of the
+        // two permissions is missing, and they live in different Settings panes.
+        Log.app.info(
+            """
+            Permissions — microphone: \(String(describing: self.permissions.microphone), privacy: .public),             accessibility: \(self.permissions.accessibility, privacy: .public),             inputMonitoring: \(self.permissions.inputMonitoring, privacy: .public)
+            """
+        )
+
         installHotkeyMonitor()
         observeSettings()
         hud.attach(controller: self)

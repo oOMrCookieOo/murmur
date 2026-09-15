@@ -20,10 +20,17 @@ final class LevelMeter: Sendable {
     static func normalisedLevel(of buffer: AVAudioPCMBuffer) -> Float {
         guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return 0 }
 
-        var meanSquare: Float = 0
-        vDSP_measqv(channels[0], 1, &meanSquare, vDSP_Length(buffer.frameLength))
+        // Loudest channel, not channel 0: on an interface whose mic is wired to
+        // the right channel, metering only the left shows a flat line while
+        // transcription works perfectly.
+        var loudestMeanSquare: Float = 0
+        for channel in 0..<Int(buffer.format.channelCount) {
+            var meanSquare: Float = 0
+            vDSP_measqv(channels[channel], 1, &meanSquare, vDSP_Length(buffer.frameLength))
+            loudestMeanSquare = max(loudestMeanSquare, meanSquare)
+        }
 
-        let rms = sqrt(meanSquare)
+        let rms = sqrt(loudestMeanSquare)
         let decibels = 20 * log10(max(rms, 1e-7))
 
         // -60 dB (near silence) → 0, 0 dB (clipping) → 1.

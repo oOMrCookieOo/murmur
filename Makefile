@@ -1,4 +1,4 @@
-.PHONY: build debug run clean sign-cert install check
+.PHONY: build debug run clean sign-cert install check test
 
 # Build a release Murmur.app into ./build
 build:
@@ -32,3 +32,16 @@ install: build
 clean:
 	@rm -rf build
 	@echo "==> Cleaned"
+
+# Run the cleanup safety tests (pure functions, no app launch)
+test:
+	@mkdir -p build/tests
+	@swiftc -swift-version 6 -target $$(uname -m)-apple-macos27.0 \
+		-o build/tests/cleanup-tests \
+		Tests/CleanupTests.swift \
+		Murmur/Cleanup/TranscriptCleaner.swift \
+		Murmur/Core/Timeout.swift \
+		Murmur/Core/Log.swift \
+		Murmur/Core/AppSettings.swift \
+		Murmur/Input/TriggerKey.swift
+	@./build/tests/cleanup-tests

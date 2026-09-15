@@ -117,8 +117,27 @@ answering your dictation instead of tidying it.
 
 ## How it stays fast
 
-The target is under ~100 ms from key-up to pasted text. The work that would
-blow that budget is moved off the critical path:
+### Measured numbers
+
+On Apple Silicon, with the model resident:
+
+| Stage | Cost |
+|---|---|
+| `SpeechAnalyzer.start(inputSequence:)` at key-down | ~9 µs |
+| `bestAvailableAudioFormat` (first call) | ~58 ms |
+| `prepareToAnalyze(in:)` (first call / later) | ~35 ms / ~1.5 ms |
+| **`finalizeAndFinishThroughEndOfInput()`** | **56–64 ms** (1–3 s speech), **106–110 ms** (8.5 s speech) |
+| `results.value` after finalise | ~0.4 µs |
+
+The honest reading: **the framework's own finalisation is the floor**, and for
+utterances longer than a few seconds it alone approaches or exceeds 100 ms
+before Murmur does anything. Short bursts — the common case for push-to-talk —
+land comfortably under. Treat "~100 ms" as the app overhead target, not an
+absolute round-trip guarantee.
+
+### What the design buys
+
+The expensive work is moved off the critical path:
 
 1. **`modelRetention: .processLifetime`** keeps the speech model resident
    between dictations instead of unloading it each time.
@@ -132,11 +151,17 @@ blow that budget is moved off the critical path:
    thread. An event tap whose run loop stalls gets disabled by the system, and a
    SwiftUI main thread stalls constantly.
 
+A known limit: the 2048-frame (~43 ms) tap request is advisory, and the system
+clamps it to 4800 frames (100 ms) in practice. `AVAudioEngine.stop()` flushes no
+further audio, so releasing the key mid-syllable can clip the last fraction of a
+word.
+
 ---
 
 ## Building
 
 ```sh
+make test      # cleanup safety tests
 make build     # release build into ./build
 make debug     # unoptimised, with debug info
 make run       # build and relaunch
