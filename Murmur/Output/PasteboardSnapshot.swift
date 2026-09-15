@@ -7,29 +7,49 @@ import AppKit
 /// restoring preserves rich text, images and custom app formats.
 struct PasteboardSnapshot: Sendable {
 
-    /// One dictionary per pasteboard item: UTI string → raw data.
-    private let items: [[String: Data]]
+    /// One entry per pasteboard item. Each is an *ordered* list of
+    /// (UTI, data) pairs.
+    ///
+    /// Ordered, not a dictionary: `NSPasteboardItem.types` is sorted by
+    /// richness and receivers genuinely consult that order. Restoring through
+    /// an unordered `Dictionary` could re-register plain text ahead of RTF, so
+    /// a later paste would come out unstyled.
+    private let items: [[(type: String, data: Data)]]
 
-    /// `changeCount` at capture time.
-    let changeCount: Int
+    /// How many items the pasteboard actually held when we looked.
+    ///
+    /// Compared against `items.count` to tell "the clipboard was empty" apart
+    /// from "the clipboard had something we could not read" — a distinction
+    /// that decides whether restoring is safe.
+    private let originalItemCount: Int
+
+    /// True when every item present was captured in full.
+    var isComplete: Bool { items.count == originalItemCount }
 
     static func capture(from pasteboard: NSPasteboard = .general) -> PasteboardSnapshot {
-        var captured: [[String: Data]] = []
+        let present = pasteboard.pasteboardItems ?? []
+        var captured: [[(type: String, data: Data)]] = []
 
-        for item in pasteboard.pasteboardItems ?? [] {
-            var representations: [String: Data] = [:]
+        for item in present {
+            var representations: [(type: String, data: Data)] = []
             for type in item.types {
-                // Lazy representations (file promises, some drag flavours) return
-                // nil here. Nothing we can do about those; the common formats all
-                // come through.
+                // Lazy representations (file promises from Mail, Photos, Figma;
+                // some drag flavours) return nil here, and an item whose owner
+                // has quit returns nil for everything.
                 if let data = item.data(forType: type) {
-                    representations[type.rawValue] = data
+                    representations.append((type.rawValue, data))
                 }
             }
             if !representations.isEmpty { captured.append(representations) }
         }
 
-        return PasteboardSnapshot(items: captured, changeCount: pasteboard.changeCount)
+        if captured.count != present.count {
+            Log.output.info(
+                "Captured \(captured.count, privacy: .public) of \(present.count, privacy: .public) clipboard items"
+            )
+        }
+
+        return PasteboardSnapshot(items: captured, originalItemCount: present.count)
     }
 
     /// Puts the captured contents back.
@@ -46,9 +66,25 @@ struct PasteboardSnapshot: Sendable {
             return false
         }
 
-        pasteboard.clearContents()
+        // Every check happens BEFORE clearContents(), because clearing is the
+        // destructive step and there is no undo.
+        //
+        // An empty `items` does not mean the clipboard was empty: it also
+        // happens when capture failed outright (file promises, a quit owner).
+        // Clearing in that case would permanently destroy real user data, so
+        // when we hold nothing useful we touch nothing at all.
+        guard !items.isEmpty else {
+            if originalItemCount > 0 {
+                Log.output.warning("Clipboard could not be captured; leaving current contents in place")
+            }
+            return false
+        }
 
-        guard !items.isEmpty else { return true }  // clipboard was genuinely empty
+        if !isComplete {
+            Log.output.warning("Restoring a partially captured clipboard")
+        }
+
+        pasteboard.clearContents()
 
         let restored = items.map { representations -> NSPasteboardItem in
             let item = NSPasteboardItem()
@@ -57,7 +93,11 @@ struct PasteboardSnapshot: Sendable {
             }
             return item
         }
-        pasteboard.writeObjects(restored)
+
+        guard pasteboard.writeObjects(restored) else {
+            Log.output.error("Failed to restore the clipboard")
+            return false
+        }
         return true
     }
 }

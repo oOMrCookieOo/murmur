@@ -26,9 +26,12 @@ enum PrivacyPane: String {
 
 /// Tracks the permissions Murmur needs and knows how to ask for each.
 ///
-/// macOS gives no notification when a permission changes, so the values here
-/// are refreshed on a timer while any permission UI is visible, and whenever
-/// the app is reactivated.
+/// macOS gives no notification when a permission changes, so these values are
+/// only as fresh as the last `refresh()`: on `applicationDidBecomeActive`, when
+/// a permissions view appears, and via the explicit "Re-check" button. That
+/// button matters more than it looks — an `.accessory` app rarely becomes
+/// active, so a grant made with the Settings window already open shows stale
+/// until it is pressed.
 @MainActor
 @Observable
 final class PermissionsModel {

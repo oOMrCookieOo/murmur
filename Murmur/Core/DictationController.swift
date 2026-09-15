@@ -118,8 +118,15 @@ final class DictationController {
             Task { @MainActor in
                 guard let self else { return }
                 self.monitor?.setTrigger(self.settings.triggerKey)
-                await self.refreshModelAndPrewarm()
+
+                // Re-arm first, synchronously. `refreshModelAndPrewarm` can
+                // spend minutes downloading a model, and with no observation
+                // registered any setting changed during that window would be
+                // missed for good. `onChange` is one-shot, so re-registering
+                // here cannot recurse.
                 self.observeSettings()
+
+                await self.refreshModelAndPrewarm()
             }
         }
     }
@@ -187,6 +194,17 @@ final class DictationController {
     // MARK: - Dictation
 
     func begin() {
+        // A finished dictation lingers for ~1.4 s so the HUD can show its
+        // outcome. Without this, every press inside that window would be
+        // silently dropped — and speaking twice in quick succession is the
+        // normal way this app gets used.
+        if case .finished = phase {
+            dismissTask?.cancel()
+            phase = .idle
+            liveText = ""
+            hud.dismiss()
+        }
+
         guard phase == .idle else { return }
 
         guard modelState.isReady else {
@@ -274,6 +292,12 @@ final class DictationController {
             }
         }
 
+        // Cleanup must never be able to turn real speech into nothing.
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Log.cleanup.warning("Cleanup emptied the transcript; using the raw text")
+            text = raw
+        }
+
         phase = .delivering
         let delivery = await TextInjector.deliver(text, to: target, settings: snapshot)
 
@@ -282,6 +306,11 @@ final class DictationController {
             flash(.pasted)
         case .leftOnClipboard(let reason):
             flash(.copied(reason: reason))
+        case .failed(let reason):
+            // Deliberately distinct from `.copied`: the text is NOT on the
+            // clipboard, and telling the user it is would be a lie they act on.
+            Log.output.error("Delivery failed: \(reason, privacy: .public)")
+            flash(.discarded(reason: reason))
         }
 
         await rearm()
@@ -308,6 +337,12 @@ final class DictationController {
     }
 
     private func abort(reason: String) async {
+        // Without these the level loop spins at 30 Hz forever and the HUD
+        // waveform freezes mid-height.
+        autoStopTask?.cancel()
+        stopLevelPolling()
+        monitor?.setCapturing(false)
+
         await engine.cancelCapture()
         lastError = reason
         flash(.discarded(reason: reason))
@@ -334,13 +369,13 @@ final class DictationController {
         phase = .finished(outcome)
 
         dismissTask?.cancel()
-        dismissTask = Task { @MainActor in
+        dismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(1400))
-            guard !Task.isCancelled else { return }
-            if case .finished = phase {
-                phase = .idle
-                liveText = ""
-                hud.dismiss()
+            guard !Task.isCancelled, let self else { return }
+            if case .finished = self.phase {
+                self.phase = .idle
+                self.liveText = ""
+                self.hud.dismiss()
             }
         }
     }

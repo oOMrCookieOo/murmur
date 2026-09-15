@@ -30,7 +30,17 @@ fi
 echo "==> Creating a self-signed code-signing certificate: $CERT_NAME"
 echo
 
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+# Pinned to the system LibreSSL, NOT whatever `openssl` is first in PATH.
+# Homebrew's OpenSSL 3.x defaults to PKCS#12 encryption algorithms that Apple's
+# Security framework cannot read, and the import fails with a misleading
+# "MAC verification failed ... (wrong password?)".
+OPENSSL=/usr/bin/openssl
+
+# A real passphrase rather than an empty one: empty-password PKCS#12 import is
+# inconsistent across macOS versions. The file is deleted moments later.
+P12_PASS="murmur-local-$$"
+
+"$OPENSSL" req -x509 -newkey rsa:2048 -nodes -days 3650 \
     -keyout "$TMP/key.pem" \
     -out "$TMP/cert.pem" \
     -subj "/CN=$CERT_NAME" \
@@ -39,11 +49,11 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
     -addext "extendedKeyUsage=critical,codeSigning" \
     2>/dev/null
 
-openssl pkcs12 -export \
+"$OPENSSL" pkcs12 -export \
     -out "$TMP/bundle.p12" \
     -inkey "$TMP/key.pem" \
     -in "$TMP/cert.pem" \
-    -passout pass: \
+    -passout "pass:$P12_PASS" \
     2>/dev/null
 
 echo "==> Importing into your login keychain."
@@ -51,7 +61,7 @@ echo "    macOS will ask for your login password."
 echo
 security import "$TMP/bundle.p12" \
     -k "$KEYCHAIN" \
-    -P "" \
+    -P "$P12_PASS" \
     -T /usr/bin/codesign \
     -A
 

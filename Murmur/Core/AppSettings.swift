@@ -62,9 +62,14 @@ struct SettingsData: Codable, Equatable, Sendable {
     var pasteRestoreDelayMilliseconds: Int = 250
 
     /// Require the Accessibility API to confirm an editable focused field
-    /// before pasting. More cautious, but produces false negatives in some
-    /// Electron apps, so it is off by default.
-    var requireEditableField: Bool = false
+    /// before pasting.
+    ///
+    /// On by default. A Cmd+V sent somewhere that does not take text is not a
+    /// harmless no-op: in the Finder it duplicates a file, and everywhere else
+    /// the transcript is then erased by the clipboard restore. The check fails
+    /// open — anything it cannot classify is allowed — so the cost of enabling
+    /// it is an occasional fall back to the clipboard, which loses nothing.
+    var requireEditableField: Bool = true
 
     var showHUD: Bool = true
     var playSounds: Bool = false

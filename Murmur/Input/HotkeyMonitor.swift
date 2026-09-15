@@ -52,6 +52,9 @@ final class HotkeyMonitor: @unchecked Sendable {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var loop: CFRunLoop?
+    /// The `passRetained` pointer handed to the C callback. Held so the retain
+    /// can be balanced exactly once when the run loop exits.
+    private var callbackToken: UnsafeMutableRawPointer?
 
     init(handler: @escaping @Sendable (HotkeyEvent) -> Void) {
         self.handler = handler
@@ -80,6 +83,12 @@ final class HotkeyMonitor: @unchecked Sendable {
         let mask = (1 << CGEventType.flagsChanged.rawValue)
                  | (1 << CGEventType.keyDown.rawValue)
 
+        // `passRetained`, not `passUnretained`: the C callback may be executing
+        // on the tap thread at the moment the last Swift reference is dropped,
+        // and an unretained pointer would then be a use-after-free. The retain
+        // is balanced once the run loop exits, below.
+        let token = Unmanaged.passRetained(self).toOpaque()
+
         // `.defaultTap` (not `.listenOnly`) because Escape has to be swallowed.
         // Returns nil when Accessibility access has not been granted.
         guard let newTap = CGEvent.tapCreate(
@@ -88,38 +97,59 @@ final class HotkeyMonitor: @unchecked Sendable {
             options: .defaultTap,
             eventsOfInterest: CGEventMask(mask),
             callback: hotkeyTapCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
+            userInfo: token
         ) else {
+            Unmanaged<HotkeyMonitor>.fromOpaque(token).release()
             throw HotkeyMonitorError.tapCreationFailed
         }
 
-        let newSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, newTap, 0)
         tap = newTap
-        source = newSource
+        source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, newTap, 0)
+        callbackToken = token
 
-        // The CF objects are read back out of locked state rather than captured:
-        // CFMachPort and CFRunLoopSource are not Sendable, and Thread's body is.
-        let thread = Thread { [weak self] in
-            guard let self else { return }
-            let current = CFRunLoopGetCurrent()
+        // `start()` must not return until the thread has published its run loop.
+        // Otherwise a `stop()` arriving first finds `loop == nil`, cleans up
+        // nothing, and leaves an orphaned thread running a live event tap.
+        let ready = DispatchSemaphore(value: 0)
 
-            self.lifecycleLock.lock()
-            self.loop = current
-            let threadTap = self.tap
-            let threadSource = self.source
-            self.lifecycleLock.unlock()
-
-            guard let threadTap, let threadSource else { return }
-
-            CFRunLoopAddSource(current, threadSource, .commonModes)
-            CGEvent.tapEnable(tap: threadTap, enable: true)
-            CFRunLoopRun()
-        }
+        let thread = Thread { [self] in threadMain(ready: ready) }
         thread.name = "com.mrcookie.Murmur.hotkey"
         thread.qualityOfService = .userInteractive
+
+        lifecycleLock.unlock()
         thread.start()
+        _ = ready.wait(timeout: .now() + 2)
+        lifecycleLock.lock()   // re-taken so the outer `defer` stays balanced
 
         Log.input.info("Hotkey tap installed")
+    }
+
+    /// Body of the dedicated tap thread.
+    private func threadMain(ready: DispatchSemaphore) {
+        let current = CFRunLoopGetCurrent()
+
+        lifecycleLock.lock()
+        loop = current
+        let threadTap = tap
+        let threadSource = source
+        lifecycleLock.unlock()
+
+        ready.signal()
+
+        guard let threadTap, let threadSource else { return }
+
+        CFRunLoopAddSource(current, threadSource, .commonModes)
+        CGEvent.tapEnable(tap: threadTap, enable: true)
+
+        CFRunLoopRun()   // returns only once stop() calls CFRunLoopStop
+
+        // The callback can no longer fire, so the retain taken in start() is
+        // balanced here — exactly once.
+        lifecycleLock.lock()
+        let token = callbackToken
+        callbackToken = nil
+        lifecycleLock.unlock()
+        if let token { Unmanaged<HotkeyMonitor>.fromOpaque(token).release() }
     }
 
     func stop() {
@@ -129,6 +159,8 @@ final class HotkeyMonitor: @unchecked Sendable {
 
         CGEvent.tapEnable(tap: tap, enable: false)
         CFRunLoopRemoveSource(loop, source, .commonModes)
+        // Without invalidating the port the tap can outlive the run loop.
+        CFMachPortInvalidate(tap)
         CFRunLoopStop(loop)
 
         self.tap = nil
@@ -151,6 +183,14 @@ final class HotkeyMonitor: @unchecked Sendable {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             lifecycleLock.unlock()
             Log.input.warning("Event tap disabled by system; re-enabled")
+
+            // Any flagsChanged that happened while the tap was dead is gone. If
+            // that was the trigger release, recording would otherwise run to the
+            // auto-stop limit and then paste two minutes of audio. Synthesising
+            // the release is the safe interpretation.
+            if capturing.load(ordering: .acquiring) {
+                handler(.triggerUp)
+            }
             return nil
 
         case .flagsChanged:
