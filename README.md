@@ -98,6 +98,45 @@ unsafe — no app focused, focus moved to a different app mid-dictation, the
 target app quit, or Accessibility access missing. The HUD says which happened.
 Your words are never silently dropped.
 
+### Custom vocabulary
+
+**Settings → Vocabulary.** One word or phrase per line: names, jargon, project
+nouns — anything the transcriber keeps getting wrong.
+
+This uses `AnalysisContext.contextualStrings` to bias recognition toward your
+words, entirely on-device. The model is fixed, but what it expects to hear is
+not, so this is the largest accuracy lever available short of a different model.
+Editing the list rebuilds the speech session, which costs ~35 ms on the next
+dictation only.
+
+### Recent transcripts
+
+The menu lists your recent dictations; click one to copy it back. Every other
+safeguard stops your words being *destroyed* — this is the one that lets you
+*recover* a dictation that landed somewhere unexpected.
+
+**In memory only, cleared when Murmur quits.** Everything you dictate passes
+through here: spoken passwords, messages, private notes. A plaintext log on disk
+of everything ever said to the app would be a far worse default than losing
+history at quit. Settings → Advanced sets the count; 0 disables it.
+
+### Microphone
+
+**Settings → General → Microphone.** "System default" follows whatever macOS is
+using, including AirPods coming and going. A specific device is remembered by
+its stable UID, so it survives reboots and reconnection, and falls back to the
+default if it is unplugged.
+
+### Stopping automatically
+
+**Settings → Advanced → "Stop automatically when I stop speaking"**, using
+Apple's on-device voice activity detection.
+
+Tap-to-start mode only. While you are holding the key, the key already says when
+to stop, and being cut off mid-pause would be both surprising and unfixable.
+Silence is only counted after your first word, so the gap between pressing the
+key and starting to speak never triggers it.
+
 ### Cleanup
 
 Two independent toggles in **Settings → Cleanup**, both off by default:
@@ -135,6 +174,12 @@ before Murmur does anything. Short bursts — the common case for push-to-talk �
 land comfortably under. Treat "~100 ms" as the app overhead target, not an
 absolute round-trip guarantee.
 
+Murmur measures itself: every dictation logs key-up → paste with a per-stage
+breakdown, and the menu shows your last figure and a rolling median. Timed to
+the instant Cmd+V is posted, not to when the paste call returns — the clipboard
+restore happens ~250 ms later, and counting it would overstate what you actually
+experience.
+
 ### What the design buys
 
 The expensive work is moved off the critical path:
@@ -151,10 +196,13 @@ The expensive work is moved off the critical path:
    thread. An event tap whose run loop stalls gets disabled by the system, and a
    SwiftUI main thread stalls constantly.
 
-A known limit: the 2048-frame (~43 ms) tap request is advisory, and the system
-clamps it to 4800 frames (100 ms) in practice. `AVAudioEngine.stop()` flushes no
-further audio, so releasing the key mid-syllable can clip the last fraction of a
-word.
+The 2048-frame (~43 ms) tap request is advisory, and the system clamps it to
+4800 frames (100 ms) in practice. `AVAudioEngine.stop()` flushes no further
+audio, so cutting the stream at key-up would discard up to 100 ms — enough to
+clip a word when you release on the last syllable. Murmur waits for that final
+block to land, adaptively: a buffer boundary may be 5 ms away or 100 ms away, and
+sleeping the worst case every time would hand the whole saving back as latency.
+Settings → Advanced → "Keep listening after release"; 0 disables it.
 
 ---
 
@@ -203,16 +251,21 @@ Murmur/
                 BufferConverter        mic format → analyzer format
                 ModelCatalog           AssetInventory download / reserve
                 LevelMeter             render-thread-safe input level
+                SpeechActivity         voice activity, for auto-stop
+                AudioDevices           CoreAudio microphone enumeration
   Input/        HotkeyMonitor          CGEventTap on a dedicated thread
                 TriggerKey             modifier keys + device-dependent masks
   Output/       TextInjector           the paste pipeline
                 PasteboardSnapshot     capture / restore the clipboard
                 FocusSnapshot          which app to paste into
   Cleanup/      TranscriptCleaner      optional, guarded, falls back to raw
+  Core/         TranscriptHistory      recent dictations, in memory only
+                Timeout                wall-clock-bounded race helper
   Permissions/  PermissionsModel       status, prompts, Settings deep links
   UI/           MenuBarPanel, SettingsView, HUDController, HUDView
 Config/         Info.plist, Murmur.entitlements
 Scripts/        build-app.sh, make-signing-cert.sh
+Tests/          CleanupTests.swift — run with `make test`
 ```
 
 ### The paste pipeline
@@ -229,6 +282,15 @@ Two details worth knowing:
 - The clipboard is restored **only if `changeCount` still matches** what Murmur
   wrote. If you copied something else in the meantime, that newer content wins
   rather than being clobbered.
+- The transcript is supplied **lazily**, so the restore happens the moment the
+  target actually reads it instead of after a fixed delay. This is an
+  optimisation, never a correctness requirement: the first read caches the value
+  and no later read re-fires the callback, so a clipboard manager that reads on
+  change consumes the signal. When that happens Murmur falls back to the timed
+  restore, so the result is faster or identical, never worse.
+- The clipboard write is tagged `org.nspasteboard.ConcealedType`, so clipboard
+  managers do not archive every dictation and Universal Clipboard does not push
+  it to your other devices.
 - Murmur waits for physically-held modifiers to clear (up to 60 ms) before
   posting ⌘V. Without it, a still-held Right Option turns the synthetic paste
   into ⌥⌘V in the target app.
