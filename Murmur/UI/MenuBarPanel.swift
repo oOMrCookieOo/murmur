@@ -142,9 +142,11 @@ struct MenuBarPanel: View {
     /// Recent transcripts, so a dictation that landed somewhere unexpected is
     /// recoverable rather than gone.
     ///
-    /// Always shown, including when empty. Hiding it until the first dictation
-    /// meant there was no way to discover the feature existed, or to tell
-    /// "nothing recorded yet" apart from "this is broken".
+    /// Shown whenever history is switched on, including when it is empty —
+    /// hiding it until the first dictation meant there was no way to discover
+    /// the feature existed, or to tell "nothing recorded yet" apart from "this
+    /// is broken". It disappears only when the limit is 0, i.e. when the user
+    /// has turned history off outright.
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {

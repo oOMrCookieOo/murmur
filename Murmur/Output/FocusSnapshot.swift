@@ -65,6 +65,10 @@ struct FocusSnapshot: Sendable, Equatable {
 
         let deadline = ContinuousClock.now + .milliseconds(timeoutMilliseconds)
         while ContinuousClock.now < deadline {
+            // `try? await Task.sleep` returns instantly once cancelled, so
+            // without this the loop busy-spins the main actor for its full
+            // timeout.
+            if Task.isCancelled { return false }
             if isStillFrontmost { return true }
             try? await Task.sleep(for: .milliseconds(10))
         }

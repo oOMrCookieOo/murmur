@@ -137,7 +137,17 @@ actor SpeechEngine {
     /// a session and silently orphaning the loser's analyzer and results task.
     private var prewarmTask: Task<Void, Error>?
 
-    private var configurationObserver: (any NSObjectProtocol)?
+    /// `nonisolated(unsafe)` so `deinit` can reach it: a nonisolated deinit
+    /// cannot touch actor-isolated non-Sendable state. Safe in practice — it is
+    /// written once from the actor and read once in deinit, which by definition
+    /// runs after all actor work has finished.
+    nonisolated(unsafe) private var configurationObserver: (any NSObjectProtocol)?
+    /// Set when the audio route changed mid-capture. The controller polls this
+    /// and ends the dictation so the partial transcript is salvaged, rather
+    /// than leaving a dead tap producing nothing.
+    private let interrupted = OSAllocatedUnfairLock(initialState: false)
+
+    nonisolated var captureWasInterrupted: Bool { interrupted.withLock { $0 } }
 
     /// Live input level, readable without awaiting the actor so the HUD can poll
     /// it from the main thread without contending for actor time.
@@ -193,7 +203,12 @@ actor SpeechEngine {
 
     private func handleConfigurationChange() {
         guard captureState == .capturing else { return }
-        Log.audio.warning("Audio configuration changed mid-dictation; capture may be truncated")
+        // AVAudioEngine stops on a route change and the tap dies with it, so
+        // the dictation would otherwise run to the auto-stop limit producing
+        // nothing. Flagging it lets the controller finish now and keep whatever
+        // was heard before the microphone changed.
+        Log.audio.warning("Audio route changed mid-dictation; ending capture")
+        interrupted.withLock { $0 = true }
     }
 
     // MARK: - Prewarming
@@ -388,6 +403,7 @@ actor SpeechEngine {
             }
 
             activity.reset()
+            interrupted.withLock { $0 = false }
             audioEngine.prepare()
             try audioEngine.start()
             captureState = .capturing
@@ -410,7 +426,10 @@ actor SpeechEngine {
     ///   the system and `AVAudioEngine.stop()` flushes nothing, so cutting the
     ///   stream at key-up discards up to 100 ms — enough to clip the last word
     ///   when someone releases the key on the final syllable.
-    func endCapture(tailGraceMilliseconds: Int = 150) async throws -> String {
+    func endCapture(
+        tailGraceMilliseconds: Int = 150,
+        keyUpAt: ContinuousClock.Instant? = nil
+    ) async throws -> String {
         if captureState == .starting {
             // The user finished before the engine did. Abandoning is right:
             // letting the start complete would leave the microphone open with
@@ -428,7 +447,12 @@ actor SpeechEngine {
         }
         captureState = .finishing
 
-        await waitForFinalBuffer(timeoutMilliseconds: tailGraceMilliseconds)
+        // Clamped because the value is loaded from JSON, which the Settings
+        // stepper's 0...500 bound does not police.
+        await waitForFinalBuffer(
+            timeoutMilliseconds: min(max(tailGraceMilliseconds, 0), 1000),
+            since: keyUpAt
+        )
 
         teardownAudio()
         session.continuation.finish()
@@ -520,10 +544,13 @@ actor SpeechEngine {
     /// Adaptive rather than a fixed sleep: a buffer boundary may be 5 ms away or
     /// 100 ms away, and sleeping the worst case every time would hand the whole
     /// saving straight back as latency.
-    private func waitForFinalBuffer(timeoutMilliseconds: Int) async {
+    private func waitForFinalBuffer(timeoutMilliseconds: Int, since keyUpAt: ContinuousClock.Instant?) async {
         guard timeoutMilliseconds > 0, let sink else { return }
 
-        let mark = ContinuousClock.now
+        // Measured from key-up, not from entering this function: time already
+        // spent hopping through the controller is time a buffer may have
+        // arrived in, and counting it again just adds latency.
+        let mark = keyUpAt ?? ContinuousClock.now
         let deadline = mark + .milliseconds(timeoutMilliseconds)
 
         while ContinuousClock.now < deadline {
@@ -537,6 +564,12 @@ actor SpeechEngine {
         if audioEngine.isRunning { audioEngine.stop() }
         audioEngine.inputNode.removeTap(onBus: 0)
         sink = nil
+    }
+
+    deinit {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
     }
 
     private func discardPreparedSession() async {

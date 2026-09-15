@@ -23,8 +23,14 @@ final class LevelMeter: Sendable {
         // Loudest channel, not channel 0: on an interface whose mic is wired to
         // the right channel, metering only the left shows a flat line while
         // transcription works perfectly.
+        //
+        // Interleaved buffers expose a single pointer with all channels in one
+        // run, so indexing past 0 would read out of bounds on the render
+        // thread. `stride == 1` identifies the deinterleaved case.
+        let channelCount = buffer.stride == 1 ? Int(buffer.format.channelCount) : 1
+
         var loudestMeanSquare: Float = 0
-        for channel in 0..<Int(buffer.format.channelCount) {
+        for channel in 0..<channelCount {
             var meanSquare: Float = 0
             vDSP_measqv(channels[channel], 1, &meanSquare, vDSP_Length(buffer.frameLength))
             loudestMeanSquare = max(loudestMeanSquare, meanSquare)

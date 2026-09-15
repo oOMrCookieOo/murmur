@@ -75,9 +75,15 @@ struct PasteboardSnapshot: Sendable {
         // when we hold nothing useful we touch nothing at all.
         guard !items.isEmpty else {
             if originalItemCount > 0 {
+                // We hold nothing useful and the user had something, so the
+                // only safe move is to touch nothing.
                 Log.output.warning("Clipboard could not be captured; leaving current contents in place")
+                return false
             }
-            return false
+            // Genuinely empty before we borrowed it. Clearing restores that
+            // exactly, and stops the transcript lingering on the pasteboard.
+            pasteboard.clearContents()
+            return true
         }
 
         if !isComplete {

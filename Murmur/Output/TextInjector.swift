@@ -40,7 +40,11 @@ enum TextInjector {
     }
 
     enum Delivery: Sendable, Equatable {
-        case pasted
+        /// `confirmed` is true when the target was observed taking the text.
+        /// False means we posted the keystroke and the read was never seen —
+        /// usually a clipboard manager consuming the signal first, occasionally
+        /// a paste that did not land. Reported honestly rather than as success.
+        case pasted(confirmed: Bool)
         /// Text is on the clipboard. `reason` is nil when that is what the user asked for.
         case leftOnClipboard(reason: String?)
         /// Nothing could be delivered. The text is NOT on the clipboard.
@@ -110,7 +114,8 @@ enum TextInjector {
     /// tell, which is common in terminals and web views.
     private static func caretFollowsNonWhitespace(pid: pid_t) -> Bool? {
         let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
+        AXUIElementSetMessagingTimeout(app, Self.axMessageTimeout)
+        let deadline = ContinuousClock.now + Self.axTotalBudget
 
         var focusedValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success,
@@ -118,6 +123,8 @@ enum TextInjector {
               CFGetTypeID(focusedValue) == AXUIElementGetTypeID()
         else { return nil }
         let element = unsafeDowncast(focusedValue as AnyObject, to: AXUIElement.self)
+
+        guard ContinuousClock.now < deadline else { return nil }
 
         var rangeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,
@@ -134,6 +141,8 @@ enum TextInjector {
         // A selection is about to be *replaced*, so what precedes the selection
         // is irrelevant — "hello[world]" + "there" should give "hellothere".
         guard caret.length == 0 else { return false }
+
+        guard ContinuousClock.now < deadline else { return nil }
 
         var previousCharacter = CFRange(location: caret.location - 1, length: 1)
         guard let parameter = AXValueCreate(.cfRange, &previousCharacter) else { return nil }
@@ -196,16 +205,19 @@ enum TextInjector {
     private static func focusedElementLooksEditable(pid: pid_t) -> Bool {
         let app = AXUIElementCreateApplication(pid)
 
-        // Without this, a beachballing target blocks each cross-process AX call
-        // for the ~6 s default, freezing our main actor and the HUD with it.
-        // A timeout surfaces as an error, which the fail-open guards treat as
-        // "allow", so the worst case is the behaviour we had before.
-        AXUIElementSetMessagingTimeout(app, 0.25)
+        // Per *message*, and this function sends up to three, so the cap is
+        // what bounds the total rather than the timeout alone. Without any
+        // timeout a beachballing target blocks for the ~6 s default and freezes
+        // the main actor with it. A timeout surfaces as an error, which the
+        // fail-open guards treat as "allow".
+        AXUIElementSetMessagingTimeout(app, Self.axMessageTimeout)
+        let deadline = ContinuousClock.now + Self.axTotalBudget
 
         var focusedValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success,
               let focusedValue
         else { return true }
+        guard ContinuousClock.now < deadline else { return true }
 
         // The value crosses a process boundary from another app's AX server; a
         // non-conforming one can hand back a CFString or CFNull. An unchecked
@@ -220,6 +232,7 @@ enum TextInjector {
            settable.boolValue {
             return true
         }
+        guard ContinuousClock.now < deadline else { return true }
 
         var roleValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
@@ -290,6 +303,12 @@ enum TextInjector {
         return item
     }
 
+    /// Per-message Accessibility timeout, and the total this side of the paste
+    /// is allowed to spend waiting on another process. Six messages at the old
+    /// 0.25 s could aggregate to ~1.5 s of frozen UI against a hung target.
+    private static let axMessageTimeout: Float = 0.1
+    private static let axTotalBudget: Duration = .milliseconds(300)
+
     /// Never restore sooner than this after the keystroke, however quickly a
     /// read is observed.
     ///
@@ -337,6 +356,23 @@ enum TextInjector {
             return false
         }
         return true
+    }
+
+    /// Leaves the transcript on the clipboard instead of pasting it.
+    ///
+    /// Writes first and only restores if that write fails — the old code
+    /// restored the previous clipboard and then overwrote it one line later,
+    /// which did nothing except look like it was protecting something.
+    private static func fallBackToClipboard(
+        _ text: String,
+        previous: PasteboardSnapshot,
+        reason: String
+    ) -> DeliveryReport {
+        guard writeToClipboardWithoutRestoring(text) else {
+            previous.restore(to: .general, onlyIfUnchangedFrom: NSPasteboard.general.changeCount)
+            return DeliveryReport(.failed(reason: "Could not write to the clipboard"))
+        }
+        return DeliveryReport(.leftOnClipboard(reason: reason))
     }
 
     // MARK: - Paste
@@ -389,9 +425,7 @@ enum TextInjector {
         // suspend, and a Cmd-Tab in that window would send the paste — and the
         // user's text — into the wrong app.
         if let target, !target.isStillFrontmost {
-            previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
-            _ = writeToClipboardWithoutRestoring(separated)
-            return DeliveryReport(.leftOnClipboard(reason: "Focus moved to another app"))
+            return fallBackToClipboard(text, previous: previous, reason: "Focus moved to another app")
         }
 
         // Re-checked here, not only in pasteBlocker: the AX work, the modifier
@@ -399,16 +433,12 @@ enum TextInjector {
         // password field or sudo prompt can appear inside that window. Posting
         // into secure input silently swallows the keystroke.
         if IsSecureEventInputEnabled() {
-            previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
-            _ = writeToClipboardWithoutRestoring(text)
-            return DeliveryReport(.leftOnClipboard(reason: "A password field is active"))
+            return fallBackToClipboard(text, previous: previous, reason: "A password field is active")
         }
 
         let pastedAt = ContinuousClock.now
         guard postCommandV() else {
-            previous.restore(to: pasteboard, onlyIfUnchangedFrom: ourChangeCount)
-            _ = writeToClipboardWithoutRestoring(text)
-            return DeliveryReport(.leftOnClipboard(reason: "Could not send the paste keystroke"))
+            return fallBackToClipboard(text, previous: previous, reason: "Could not send the paste keystroke")
         }
 
         // Restore as soon as the target has actually taken the text. Falling
@@ -427,7 +457,7 @@ enum TextInjector {
         if let target {
             lastPasteTarget = (target.processIdentifier, target.bundleIdentifier, .now)
         }
-        return DeliveryReport(.pasted, pastedAt: pastedAt)
+        return DeliveryReport(.pasted(confirmed: confirmed), pastedAt: pastedAt)
     }
 
     private static func postCommandV() -> Bool {

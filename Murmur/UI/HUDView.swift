@@ -68,10 +68,10 @@ struct HUDView: View {
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.8)
-        case .finished(.pasted):
-            Image(systemName: "checkmark.circle.fill")
+        case .finished(.pasted(let confirmed)):
+            Image(systemName: confirmed ? "checkmark.circle.fill" : "checkmark.circle")
                 .font(.system(size: 17))
-                .foregroundStyle(.green)
+                .foregroundStyle(confirmed ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
         case .finished(.copied):
             Image(systemName: "doc.on.clipboard.fill")
                 .font(.system(size: 15))
@@ -112,14 +112,18 @@ struct HUDView: View {
                 .foregroundStyle(isError ? .secondary : .primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: Self.textWidthLimit, alignment: .leading)
+                .frame(maxWidth: Self.idleTextWidthLimit, alignment: .leading)
                 .fixedSize(horizontal: true, vertical: false)
         }
     }
 
     /// Caps the text so content can never outgrow the capsule.
-    /// 340 − 2×18 padding − 20 glyph − 12 spacing − 74 waveform − 10 spacing.
+    ///
+    /// While recording the budget is 340 − 36 padding − 20 glyph − 12 − 74
+    /// waveform − 10 = 188 pt, kept at 170 for a little slack. The idle branch
+    /// has no waveform and so can afford more.
     private static let textWidthLimit: CGFloat = 170
+    private static let idleTextWidthLimit: CGFloat = 250
 
     private var isError: Bool {
         if case .finished(.discarded) = controller.phase { return true }
@@ -133,7 +137,10 @@ struct HUDView: View {
         case .finalizing:              return "Transcribing"
         case .polishing:               return "Cleaning up"
         case .delivering:              return "Pasting"
-        case .finished(.pasted):       return "Pasted"
+        case .finished(.pasted(true)):  return "Pasted"
+        // Hollow tick and a qualifier: the keystroke went out but nothing was
+        // seen taking it, so claiming success outright would be a guess.
+        case .finished(.pasted(false)): return "Pasted — unverified"
         case .finished(.copied(nil)):  return "Copied to clipboard"
         case .finished(.copied(let reason?)):
             return "Clipboard — \(reason)"

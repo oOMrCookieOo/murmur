@@ -13,11 +13,18 @@ run: build
 	@open build/Murmur.app
 	@echo "==> Murmur is running. Look for the mic icon in the menu bar."
 
-# Typecheck only; fastest way to validate a change
+# Compile with the real build flags, without bundling or signing.
+#
+# Deliberately NOT `-typecheck`: that skips the passes that produce isolation
+# diagnostics, so it once reported "no errors or warnings" on code that failed
+# to build. A check that can pass while the build fails is worse than no check.
 check:
-	@swiftc -typecheck -swift-version 6 \
+	@mkdir -p build/check
+	@swiftc -swift-version 6 -O -whole-module-optimization \
 		-target $$(uname -m)-apple-macos27.0 \
-		$$(find Murmur -name '*.swift') && echo "==> No errors or warnings"
+		-module-name Murmur \
+		-o build/check/Murmur \
+		$$(find Murmur -name '*.swift') && echo "==> Compiles clean"
 
 # One-time: create a self-signed certificate so permissions survive rebuilds
 sign-cert:
@@ -52,3 +59,10 @@ test:
 		-o build/tests/settings-tests \
 		Tests/SettingsTests.swift $(SHARED_TEST_SOURCES)
 	@./build/tests/settings-tests
+	@echo ""
+	@swiftc -swift-version 6 -target $$(uname -m)-apple-macos27.0 \
+		-o build/tests/history-tests \
+		Tests/HistoryTests.swift \
+		Murmur/Core/TranscriptHistory.swift \
+		Murmur/Core/Log.swift
+	@./build/tests/history-tests

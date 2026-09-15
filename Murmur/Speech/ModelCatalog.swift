@@ -106,7 +106,34 @@ enum ModelCatalog {
             onProgress(1.0)
         }
 
+        await ensureReserved(resolved)
+    }
+
+    /// Reserves `locale` so the system does not evict its model.
+    ///
+    /// Called for every *installed* locale, not only freshly downloaded ones.
+    /// Reserving only on download meant that in practice nothing was ever
+    /// reserved — the common case is a locale that is already installed — and
+    /// the model this app depends on stayed evictable.
+    static func ensureReserved(_ locale: Locale) async {
+        guard let resolved = await resolve(locale) else { return }
         await reserve(resolved)
+    }
+
+    /// Releases reservations left over from previous launches.
+    ///
+    /// Reservations are system state that outlives the process, and there are
+    /// only five slots. Without this, switching language across enough launches
+    /// exhausts them and reserving silently starts failing.
+    static func releaseStaleReservations(keeping locale: Locale) async {
+        guard let keep = await resolve(locale) else { return }
+        let keepID = keep.identifier(.bcp47)
+
+        for reserved in await AssetInventory.reservedLocales
+        where reserved.identifier(.bcp47) != keepID {
+            _ = await AssetInventory.release(reservedLocale: reserved)
+            Log.speech.info("Released stale reservation \(reserved.identifier(.bcp47), privacy: .public)")
+        }
     }
 
     /// Reserves `locale`, releasing whatever we reserved previously.

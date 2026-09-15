@@ -2,8 +2,9 @@ import Foundation
 
 /// Where a dictation ended up. Drives the closing HUD message.
 enum DictationOutcome: Equatable, Sendable {
-    /// Text was pasted into the target app.
-    case pasted
+    /// Text was pasted into the target app. `confirmed` is false when the
+    /// keystroke went out but the target was never observed taking the text.
+    case pasted(confirmed: Bool)
     /// Text was left on the clipboard (clipboard-only mode, or no safe target).
     case copied(reason: String?)
     /// Nothing usable was produced, or the user cancelled.

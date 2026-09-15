@@ -176,7 +176,11 @@ final class DictationController {
     // MARK: - Model
 
     func refreshModelAndPrewarm() async {
-        let locale = settings.snapshot.locale
+        // One snapshot for the whole function: it spans several awaits, and
+        // reading settings live either side of them can mix pre- and
+        // post-change values into the same configuration.
+        let snapshot = settings.snapshot
+        let locale = snapshot.locale
         modelState = await ModelCatalog.state(for: locale)
 
         if case .notInstalled = modelState {
@@ -185,12 +189,17 @@ final class DictationController {
 
         guard modelState.isReady else { return }
 
+        // Pin the model we depend on, and let go of anything a previous launch
+        // reserved; there are only five slots system-wide.
+        await ModelCatalog.releaseStaleReservations(keeping: locale)
+        await ModelCatalog.ensureReserved(locale)
+
         await engine.configure(
             locale: locale,
-            vocabulary: settings.snapshot.vocabularyTerms,
-            inputDeviceUID: settings.inputDeviceUID,
-            detectSpeechActivity: settings.autoStopOnSilence
-                && settings.activationMode == .toggle
+            vocabulary: snapshot.vocabularyTerms,
+            inputDeviceUID: snapshot.inputDeviceUID,
+            detectSpeechActivity: snapshot.autoStopOnSilence
+                && snapshot.activationMode == .toggle
         ) { [weak self] text in
             Task { @MainActor in self?.liveText = text }
         }
@@ -205,7 +214,7 @@ final class DictationController {
         // Only when the user has opted in. Warming the foundation model costs
         // real memory, and loading it for a feature that is switched off would
         // be exactly the bloat this app is trying to avoid.
-        if settings.polishWithAppleIntelligence {
+        if snapshot.polishWithAppleIntelligence {
             await cleaner.prewarm()
         }
     }
@@ -339,7 +348,10 @@ final class DictationController {
         let startedAt = keyUpAt ?? .now
         let raw: String
         do {
-            raw = try await engine.endCapture(tailGraceMilliseconds: snapshot.tailGraceMilliseconds)
+            raw = try await engine.endCapture(
+                tailGraceMilliseconds: snapshot.tailGraceMilliseconds,
+                keyUpAt: startedAt
+            )
         } catch {
             await abort(reason: error.localizedDescription)
             return
@@ -380,8 +392,11 @@ final class DictationController {
         recordLatency(from: startedAt, transcribedAt: transcribedAt, cleanedAt: cleanedAt, report: report)
 
         switch report.delivery {
-        case .pasted:
-            flash(.pasted)
+        case .pasted(let confirmed):
+            if !confirmed {
+                Log.output.info("Paste posted but the read was never observed")
+            }
+            flash(.pasted(confirmed: confirmed))
         case .leftOnClipboard(let reason):
             // Logged because this is the outcome worth diagnosing: the words
             // are safe, but they did not go where the user was looking, and
@@ -521,6 +536,7 @@ final class DictationController {
                 // engine actor for the sake of an animation.
                 self.inputLevel = self.engine.inputLevel
                 self.checkForSilence()
+                self.checkForInterruption()
                 try? await Task.sleep(for: .milliseconds(33))   // ~30 fps
             }
         }
@@ -540,6 +556,16 @@ final class DictationController {
         else { return }
 
         Log.audio.info("Stopping after silence")
+        finish()
+    }
+
+    /// Ends the dictation when the audio route changed underneath it.
+    ///
+    /// The engine cannot finish on its own — only the controller knows what to
+    /// do with the transcript — so it raises a flag and we salvage here.
+    private func checkForInterruption() {
+        guard phase.isRecording, engine.captureWasInterrupted else { return }
+        Log.audio.info("Ending dictation after an audio route change")
         finish()
     }
 

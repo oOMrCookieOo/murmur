@@ -57,7 +57,10 @@ enum AudioDevices {
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids
         ) == noErr else { return [] }
 
-        return ids
+        // The second call can report fewer devices than the first if one was
+        // unplugged in between, leaving zeroed ids in the tail.
+        let returned = Int(size) / MemoryLayout<AudioDeviceID>.size
+        return Array(ids.prefix(min(returned, count)))
     }
 
     /// Output-only devices show up in the same list, so input channels are what
@@ -84,8 +87,10 @@ enum AudioDevices {
             return false
         }
 
+        // `bindMemory`, not `assumingMemoryBound`: this memory was freshly
+        // allocated as raw, so no binding exists to assume.
         let list = UnsafeMutableAudioBufferListPointer(
-            buffer.assumingMemoryBound(to: AudioBufferList.self)
+            buffer.bindMemory(to: AudioBufferList.self, capacity: 1)
         )
         return list.contains { $0.mNumberChannels > 0 }
     }

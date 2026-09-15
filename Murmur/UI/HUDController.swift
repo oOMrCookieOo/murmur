@@ -19,7 +19,15 @@ final class HUDController {
     private static var size: NSSize { HUDView.windowSize }
 
     private var panel: HUDPanel?
-    private weak var controller: DictationController?
+
+    /// Strong, and deliberately so.
+    ///
+    /// This was `weak`, which read as cycle protection it did not provide: the
+    /// panel's hosting view holds `HUDView`, which holds the controller
+    /// strongly, so the cycle exists either way. Both objects live for the
+    /// lifetime of the app, so the honest thing is to say so rather than
+    /// decorate it with a keyword that changes nothing.
+    private var controller: DictationController?
 
     func attach(controller: DictationController) {
         self.controller = controller
