@@ -91,6 +91,13 @@ final class DictationController {
         autoStopTask?.cancel()
         levelTask?.cancel()
         dismissTask?.cancel()
+        hud.dismiss()
+
+        // Best effort on the way out: `applicationWillTerminate` is synchronous
+        // and will not wait for this, but releasing the microphone promptly
+        // stops the orange recording indicator lingering after the app is gone.
+        // Process exit is the real backstop.
+        Task { await engine.cancelCapture() }
     }
 
     private func installHotkeyMonitor() {
